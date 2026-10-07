@@ -606,6 +606,68 @@ load (three's `compileAsync` covers scene materials but not full-screen passes).
 - The default look is unchanged by all of this: frames 120/300/720/1100 are bit-identical to before the pixel look
   (PSNR infinite).
 
+## Spike: Look presets (branch `spike-look-presets`)
+
+Named looks in the scene document, switched by undoable commands, with an A/B wipe in the viewport. The chunky-pixel
+and Wii-bloom toggles are now presets, and a PS1 preset is the first new one. Frames:
+`G:\Claude\Virtual Legacy\Channel\Virtual Shot spike\look_presets\` (one folder per preset at f300/420/720/1000,
+`editor_ab_wipe.png`, `free_keyboard\` PS1 artefacts on/off, `ps1_wobble_compare.mp4` f420–480).
+
+**What it is**
+- `look.style` in the scene JSON names the preset (absent = `default`); `look.styles` adds presets or overrides a
+  built-in's fields (deep-merged). Built-ins (`src/render/looks/styles.js`): `default`, `chunky-pixels` (480, 18-bit,
+  no AA, sharp screen at 1080), `wii-bloom` (the same plus bloom 0.5), `ps1`. A style is data only: `pixel` (the
+  chunky-pixel options or null), `materials` (a material set name) and per-set options (`ps1`).
+- Commands `setLookStyle {style}` and `defineLookStyle {name, def}` change the document, so they undo and renders to
+  disk follow them. `ShotRenderer.setStyle(resolved)` applies one: `setPixelLook` only when the pixel part changed, and
+  `setMaterialSet(name)`, which swaps every lit surface (models, cards; not the CRT or glows) to a material built on
+  first use from `MATERIAL_SETS[name](renderer, lightUniforms, the surface's bodyMaterial options)`. Each surface keeps
+  its materials per set, so switching back is free. **This is the hook the cel and Halo CE spikes would register in.**
+- Show menu › Style: a Look preset picker (runs the command) and an A/B wipe picker. The old Chunky pixels checkbox
+  and its options stay as a viewport override of the preset's pixel part (labelled "override").
+- **A/B wipe:** style B is drawn first, copied to a 2D canvas in the same task, then the document's style (A) draws to
+  the WebGPU canvas; B shows right of a draggable line (dragging only redraws the 2D overlay, no re-render). With the
+  wipe on, the idle refine draws both at Render quality in one go instead of 16 slices. Viewport only.
+- The default look is bit-identical (f300, f720: 0 differing pixels against `spike`).
+
+**PS1 preset** (`src/render/looks/ps1.js`): 240 lines (426×240), 15-bit with the 4×4 ordered dither, no AA, and a
+material set with the console's artefacts as 0..1 uniforms (no recompile to mix them):
+- *Vertex snapping:* `material.vertexNode` rounds clip xy to whole pixels of the scene buffer (wobbling polygons).
+- *Affine textures:* `varying(vec3(uv * w, w))` then `uv = xy / z` per pixel. Perspective-correct interpolation of
+  uv·w and w cancels to screen-linear uv: no special interpolation qualifier needed. Clearly visible on close, grazing
+  surfaces (keys skew, the monitor badge warps, `free_keyboard\ps1_on.png`).
+- *Gouraud:* the body lighting computed in the vertex stage (`varying(lightK(...))`), so the low-poly PSX models get
+  blotchy, per-vertex light, as on the hardware.
+- Screen text is re-evaluated at 480 lines (`sharpScreen: 480`): at 240 the chat is unreadable. Set it to 0 for the
+  authentic look.
+- **In the Black Page shot itself the PS1 artefacts are subtle:** the camera mostly pushes slowly toward a large flat
+  screen, and the props are already PSX models. Snapping and affine warping show at grazing angles and close to
+  surfaces; consecutive-frame change was about the same with and without them (MAE 0.0013–0.0021). The low resolution
+  and 15-bit dither carry most of the look here.
+
+**Costs** (headless Chrome, RTX 4090, f420/720/1000, mean GPU ms; another job held about 27% GPU utilisation during
+these timings, so treat them as upper bounds):
+
+| Style | Play | Render |
+|---|---|---|
+| default | 5.2 | 131.5 (haze march 124) |
+| chunky-pixels | 1.6 | 31.1 |
+| wii-bloom | 1.7 | 30.9 (bloom passes < 0.01) |
+| ps1 | 1.2 | 11.3 |
+| default with an A/B wipe against ps1 | 6.6 | 143.5 |
+
+The wipe costs both styles' GPU time plus a 4K↔1080 buffer reallocation each frame (CPU stayed around 5 ms). The real
+build should keep a set of buffers per style instead of resizing.
+
+**Gotchas and lessons**
+- Switching material set compiles new pipelines on first use (a stall). The real build should precompile the
+  document's style and the wipe's B at load, as it does for the default look.
+- The Show menu's pixel settings were viewport state that renders also followed; presets put the look in the document,
+  which is where it belongs (renders shouldn't depend on browser state). The override is kept only so v2/v3 tuning
+  still works; fold it into `defineLookStyle` (save the current tweaks as a preset) in the real build.
+- Next: a "Save as preset" button (defineLookStyle from the override), per-preset precompile, presets for the cel and
+  Halo CE looks via `MATERIAL_SETS`, and a PS1 depth-cue fog and no-z-buffer sorting if Connor wants it more authentic.
+
 ## Running the spike
 
 ```
