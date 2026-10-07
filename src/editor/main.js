@@ -81,9 +81,9 @@ async function boot() {
   const layerOpts = st => {
     const t = st.t, needFlat = st.flat.before || st.flat.overlay > 0, key = `${t}|${st.chaos}`;
     const flatKey = key + (st.flat.before ? '|full' : '|overlay'), up = { chat: false, flat: false, pops: false };
-    if (needFlat && drawn.flat !== flatKey) { chat.render(fctx, t, st.chaos, st.flat.before ? { geom: 'flat' } : { geom: 'flat', chrome: 0 }); drawn.flat = flatKey; up.flat = true; }
-    if (!st.flat.before && drawn.tall !== key) { chat.render(tctx, t, st.chaos, { geom: 'tall' }); drawn.tall = key; up.chat = true; }
-    if (drawn.pops !== t) { drawn.popsAny = E.pops.render(pctx, t); drawn.pops = t; up.pops = true; }
+    if (needFlat && drawn.flat !== flatKey) { perf.time('2D chat (full frame)', () => chat.render(fctx, t, st.chaos, st.flat.before ? { geom: 'flat' } : { geom: 'flat', chrome: 0 })); drawn.flat = flatKey; up.flat = true; }
+    if (!st.flat.before && drawn.tall !== key) { perf.time('2D chat (screen texture)', () => chat.render(tctx, t, st.chaos, { geom: 'tall' })); drawn.tall = key; up.chat = true; }
+    if (drawn.pops !== t) { drawn.popsAny = perf.time('2D pops', () => E.pops.render(pctx, t)); drawn.pops = t; up.pops = true; }
     return { final: true, flat: needFlat, pops: drawn.popsAny, upload: up };
   };
   E.renderNow = (quality = 'play', { output = false } = {}) => {
@@ -93,16 +93,18 @@ async function boot() {
     shot.setHidden(output ? new Set() : E.hidden);
     if (E.view === 'free' && !output) {
       const key = `${t}|${st.chaos}`, chatUp = drawn.tall !== key;
-      if (chatUp) { chat.render(tctx, t, st.chaos, { geom: 'tall' }); drawn.tall = key; }
-      shot.renderFree(st, viewport.freeCam, viewport.helpers(), E.show, { chat: chatUp });
+      if (chatUp) { perf.time('2D chat (screen texture)', () => chat.render(tctx, t, st.chaos, { geom: 'tall' })); drawn.tall = key; }
+      const helpers = perf.time('helpers', () => viewport.helpers());
+      perf.time(chatUp ? 'three: encode + upload chat' : 'three: encode', () => shot.renderFree(st, viewport.freeCam, helpers, E.show, { chat: chatUp }));
     } else {
-      E.layerOpts = layerOpts(st);
-      shot.render(st, { ...E.layerOpts, quality, show: output ? undefined : E.show });
+      E.layerOpts = layerOpts(st); const u = E.layerOpts.upload, ups = ['chat', 'flat', 'pops'].filter(k => u[k] && (k === 'chat' || E.layerOpts[k]));
+      perf.time(ups.length ? `three: encode + upload ${ups.join(', ')}` : 'three: encode', () => shot.render(st, { ...E.layerOpts, quality, show: output ? undefined : E.show }));
     }
-    perf.end(); E.quality = quality; viewport.overlay(st);
+    E.quality = quality; perf.time('overlay', () => viewport.overlay(st));
     $('timecode').textContent = E.timecode(E.frame); $('frameNo').textContent = `f ${E.frame} · ${t.toFixed(3)} s`;
     hud(quality === 'play' ? 'Play quality' : 'Render quality');
-    E.emit('frame', st);
+    perf.time('panels (timeline, inspector)', () => E.emit('frame', st));
+    perf.end();
   };
   const chat = { render: (...a) => E.chat.render(...a) };
   // one slice per step, each after the GPU has finished the last, so an edit never waits behind a queue of slices.
@@ -138,7 +140,7 @@ async function boot() {
   const loop = now => { if (!E.playing) return; const f = f0 + Math.floor((now - t0) / 1000 * E.fps);
     if (f > E.last) { E.playing = false; $('playBtn').textContent = 'Play'; E.frame = E.last; E.requestRender(); return; }
     perf.playTick(f, E.frame); E.frame = f; E.renderNow('play'); requestAnimationFrame(loop); };
-  E.togglePlay = () => { if (E.playing) { E.playing = false; $('playBtn').textContent = 'Play'; E.requestRender(); return; }
+  E.togglePlay = () => { perf.note(E.playing ? 'pause' : 'play'); if (E.playing) { E.playing = false; $('playBtn').textContent = 'Play'; E.requestRender(); return; }
     if (E.frame >= E.last) E.frame = 0; E.playing = true; t0 = performance.now(); f0 = E.frame; $('playBtn').textContent = 'Pause'; requestAnimationFrame(loop); };
   const keyTimes = () => [...new Set(E.doc.tracks.flatMap(tr => tr.keys.map(k => Math.round(k.t * E.fps))))].sort((a, b) => a - b);
   const transport = { start: () => E.setFrame(0), end: () => E.setFrame(E.last), prev: () => E.setFrame(E.frame - 1), next: () => E.setFrame(E.frame + 1),

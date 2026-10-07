@@ -513,6 +513,15 @@ goes. Open question until Connor's report comes back. For the architecture: ever
 reason, and text that animates every frame (the chat) is a candidate for drawing on the GPU (a glyph atlas) instead of
 Canvas 2D.
 
+**Follow-up from Connor:** skipping the chat redraw and upload took free-view panning from about 5 fps to his monitor's
+refresh rate, haze on or off. So on his visible browser, redrawing and uploading the Canvas 2D chat (a 1920×1330
+texture drawn as hundreds of glyphs, each with `shadowBlur`) cost on the order of 200 ms a frame, while hidden or
+headless tabs measured about 1 ms. Measuring only in hidden tabs hid the real bottleneck. The camera view still
+redraws the chat whenever time changes (scrubbing, playback), so it is still slow there. To capture specific cases,
+the stats overlay has Record and Stop: everything between them is saved as one capture (`perf/capture_<time>_<label>.json`)
+with a label, an event log (edits, view and mode switches, playback), long tasks, and a CPU breakdown per frame (2D
+chat, 2D pops, three's encode and texture uploads, panels).
+
 ## Running the spike
 
 ```

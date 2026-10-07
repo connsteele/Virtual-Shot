@@ -146,3 +146,10 @@ kbd { font: 11px var(--mono); color: var(--muted); border: 1px solid var(--line-
   .modes button { padding: 5px 10px; }
   .tl-body { grid-template-columns: 140px minmax(0, 1fr); }
 }
+
+/* stats: CPU breakdown and recording */
+.st-sub { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--accent); margin-top: 2px; }
+.st-pass.cpu .bar > div { background: var(--accent); }
+.st-rec { display: flex; gap: 6px; } .st-rec input { flex: 1; font-size: 12px; }
+.st-rec .rec { padding: 2px 8px; font-size: 12px; white-space: nowrap; }
+.st-rec .rec.on { background: var(--danger); border-color: var(--danger); color: var(--accent-ink); font-weight: 600; }
