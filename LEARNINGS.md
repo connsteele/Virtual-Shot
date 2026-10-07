@@ -99,8 +99,10 @@ and the plumbing around rendering (export, hidden tabs, artifacts), which is whe
     multisampled and resolved like colour, and additive glows must not write it. See §2 for how that bit.
 14. **Frame export is the slow part, and the browser fights it.** Measured in the browser pane on this machine:
     `canvas.toBlob` PNG took ~1 s a frame in a background tab; uploading raw 8 MB frames to the local server took
-    ~0.4 s; compressing in the page (`CompressionStream`) and letting the server wrap the PNG chunks brought it to
-    0.06 s (flat) and 0.16–0.19 s (3D) a frame. The full 1176 frames export in 186 s.
+    ~0.4 s; reading pixels back and compressing them in the page (`CompressionStream`) brought it to 0.16 s (186 s for
+    all 1176 frames). The fastest path is the old engine's: draw the WebGPU canvas into a 2D canvas in the same task as
+    the render and encode with the synchronous `toDataURL`. That exports all 1176 frames in **50 s**, against **61 s**
+    for the old engine on the same machine. No GPU readback, no JS encoding, and the PNG upload is ~0.5 MB.
 15. **Background tabs break things that a visible page never notices.** `<img>.decode()` never settles while the tab is
     hidden (the page stopped loading). three's WebGL2 backend waits for GPU readback by polling with
     `requestAnimationFrame`, which never fires in a hidden tab, so exports stalled. Render mode must not depend on
@@ -199,10 +201,11 @@ Quoted text is the doc's current wording; each item says what to replace it with
 7. **Render mode → Passes:** replace "beauty, depth, normals and an object ID mask" with "beauty, distance from the
    camera (Euclidean, multisampled like colour; additive effects don't write it), normals and an object ID mask".
    Add a bullet: "Internal resolution follows the lens: the buffer grows with barrel-distortion overscan (1×–2×)."
-8. **Render mode → Writing to disk:** replace with "The page reads pixels back, compresses them (`CompressionStream`)
-   and a small local server writes the PNGs: 0.16 s a frame at 1080p (toBlob was ~1 s). Render mode never depends on
-   `requestAnimationFrame` or `<img>.decode()`, which stall in background tabs. The File System Access API is the
-   alternative for the local copy (untested); Electron later."
+8. **Render mode → Writing to disk:** replace with "Each frame is drawn from the WebGPU canvas into a 2D canvas in the
+   same task as the render, encoded with `toDataURL`, and a small local server writes the PNG: 1176 frames at 1080p in
+   50 s (the old engine took 61 s). Render mode never depends on `requestAnimationFrame` or `<img>.decode()`, which
+   stall in background tabs. The File System Access API is the alternative for the local copy (untested); Electron
+   later."
 9. **Tech choices table:** keep `WebGPURenderer` with TSL; add to the Why cell: "Proven by the spike: the Black Page
    look ported to TSL in one pass, and the WebGL2 fallback matched the old GLSL engine (median 83 dB)." Add two rows:
    - **Colour pipeline:** "Display-referred, colour management off, for ported looks; linear for new work and EXR."
@@ -233,6 +236,7 @@ Agent wall-clock, 7 Oct 2026 (UTC). "Attempts" counts full rewrites or re-render
 | Artifact build | 01:53–01:58 | 2 | `.glb` refused → base64 text |
 | Performance check | 02:00–02:03 | 2 | page timings were inflated by the background tab; GPU timestamp queries gave the real cost |
 | LEARNINGS.md | 01:58–02:08 | 1 | |
+| Render time vs the old engine | 02:08–02:22 | 3 | timed both engines; canvas export path (50 s vs 61 s) |
 
 ## Performance
 
@@ -242,9 +246,20 @@ RTX 4090, Chrome 152 in the Claude desktop browser pane, 1920×1080, background 
 |---|---|
 | GPU time per frame, full quality (timestamp queries) | 24.1 ms at the reveal, 16.8 ms in the stare, 12.9 ms near the end |
 | GPU time per frame, DOF off | 0.1–0.3 ms |
-| Export, WebGPU, all 1176 frames (render, read back, compress, write PNG) | 186 s (0.16 s a frame) |
-| Export, WebGL2 fallback, all 1176 frames | 322 s (0.27 s a frame) |
+| Old engine GPU time per frame (WebGL2 timer queries around `renderAt`) | 19.2 ms at the reveal, 11.5 ms in the stare, 7.8 ms near the end; 0.5–1.5 ms with DOF off |
+| Spike's TSL on the WebGL2 backend (three's timestamp queries) | 8.8 / 7.1 / 6.1 ms; 0.2–0.9 ms with DOF off |
+| **Export, all 1176 frames, same machine and pane (render + PNG + write)** | **old engine 61 s; spike on WebGPU 50 s** (canvas path) |
+| Export, spike, GPU readback + `CompressionStream` path | 186 s (WebGPU), 322 s (WebGL2) |
 | Engine time per frame as seen from the page | 60–130 ms, inflated by background-tab scheduling; GPU time above is the real cost |
+
+The GPU numbers come from two different timer methods, so compare them loosely. The pattern is clear, though: the
+depth of field is nearly all the cost in every version, and the WebGPU backend runs this DOF pass 1.3–2× slower than
+the same TSL compiled to WebGL2 (and than the old GLSL). That matters for 60 fps playback, not for exports, which are
+bound by PNG encoding and upload. Profiling the WebGPU DOF (loop codegen, robustness checks on texture reads) is the
+first performance task if WebGPU is the main backend.
+
+The old engine also can't start in a hidden tab: its `init3D` waits on `<img>.decode()`. Black Page's exports
+presumably ran with the pane visible; the benchmark above patched `decode()` to run it in the background.
 
 ## WebGL2 fallback
 

@@ -53,6 +53,15 @@ async function boot() {
     if (state.flat.overlay > 0) { octx.globalAlpha = state.flat.overlay; octx.drawImage(flat, 0, 0); octx.globalAlpha = 1; }
     return out;
   }
+  /** Composite straight from the WebGPU canvas, in the same task as the render (no GPU readback, no JS encoding):
+   *  the old engine's BP.frame() path, which exported 3x faster than readback + CompressionStream. */
+  function compositeFromCanvas() {
+    octx.globalAlpha = 1; octx.clearRect(0, 0, 1920, 1080);
+    if (state.flat.before) { octx.drawImage(flat, 0, 0); return out; }
+    octx.drawImage($('gpu'), 0, 0);
+    if (state.flat.overlay > 0) { octx.globalAlpha = state.flat.overlay; octx.drawImage(flat, 0, 0); octx.globalAlpha = 1; }
+    return out;
+  }
   /** Raw RGBA8 of the composited frame (top row first). */
   async function compositePixels() {
     if (!state.flat.before && !(state.flat.overlay > 0)) return shot.readPixels();
@@ -74,12 +83,13 @@ async function boot() {
     }
   };
   let exporting = false;
-  async function exportFrames(frames, dir) {
+  async function exportFrames(frames, dir, { via = 'canvas' } = {}) {
     if (exporting) throw new Error('an export is already running'); exporting = true;
     const t0 = performance.now(); let n = 0;
     const inflight = new Set();   // up to 4 uploads in flight; the server encodes PNGs in parallel
-    try { for (const f of frames) { renderFrame(f); const idat = await pngIdat(await compositePixels());
-      const p = post(`${dir}/f${String(f).padStart(5, '0')}.png`, idat, true).finally(() => inflight.delete(p)); inflight.add(p);
+    try { for (const f of frames) { renderFrame(f); const name = `${dir}/f${String(f).padStart(5, '0')}.png`;
+      const body = via === 'canvas' ? await (await fetch(compositeFromCanvas().toDataURL('image/png'))).blob() : await pngIdat(await compositePixels());
+      const p = post(name, body, via !== 'canvas').finally(() => inflight.delete(p)); inflight.add(p);
       if (inflight.size >= 4) await Promise.race(inflight); n++;
       if (n % 20 === 0) $('status').textContent = `exported ${n}/${frames.length}`; } await Promise.all(inflight); } finally { exporting = false; }
     const s = (performance.now() - t0) / 1000; $('status').textContent = `exported ${n} frames in ${s.toFixed(1)} s`;

@@ -8,7 +8,7 @@ import path from 'node:path';
 const SPIKE = 'G:/Claude/Virtual Legacy/Channel/Virtual Shot spike';
 const REF = 'G:/Claude/Virtual Legacy/Videos/Calling (Wii)/Thumbnails & Graphics/Black Page Studio/blender/export/final_engine';
 const run = process.argv[2] || 'try1';
-const src = path.join(SPIKE, run);
+const src = path.join(SPIKE, run);  // run may be a nested path, e.g. scratch/oldengine_export
 let frames = process.argv.slice(3).map(Number);
 if (!frames.length) frames = fs.readdirSync(src).filter(f => /^f\d{5}\.png$/.test(f)).map(f => +f.slice(1, 6));
 
