@@ -1,7 +1,35 @@
-# Virtual Shot spike: handoff
+# Virtual Shot: handoff
 
-For the Claude threads in a new Virtual Shot project. Read this first, then `LEARNINGS.md` (the findings, with numbers)
-for whatever area your thread is about. Connor directs the spike; the look is his call.
+The complete handoff from the Virtual Legacy project, where Virtual Shot was planned and spiked, to its own project.
+No more Virtual Shot work happens in Virtual Legacy, so everything a new thread needs is here or linked from here.
+Connor directs the work; the look is his call.
+
+## Read in this order
+
+1. **This file:** vision, decisions, rules, state, how to work.
+2. **`docs/architecture-sketch.md`:** the plan (a copy of the Claude Doc
+   https://claude.ai/code/artifact/8d3dff7c-e6fc-49fa-bc6d-3eee72db0784, as of revision 32).
+3. **`docs/architecture-changes.md`:** what the spike says to change in that plan, item by item. Folding these into the
+   sketch (or a new architecture doc) before the real build was Connor's plan.
+4. **`LEARNINGS.md`:** the spike's findings with numbers, by section; the evidence behind the changes.
+5. **`docs/spike-brief.md`:** the original spike brief (scope, parity target, deliverables).
+6. **Research:** the Web Graphics Stack page, https://claude.ai/artifact/SgrNo4f6ewFuaKtmTXGj4L
+
+## Vision and decisions (Connor's)
+
+- **What it is:** Connor's own browser-based 3D shot tool on three.js, a pair for Virtual Cut: previz and final shots for
+  Virtual Legacy videos first, then an interactive arch-viz showcase for clients (final arch-viz renders stay in
+  Blender or Unreal).
+- **Own the tool, rent the renderer:** three.js pinned, `WebGPURenderer` with TSL, WebGL2 fallback.
+- **One JSON scene is the source of truth;** every frame is a pure function of time.
+- **Rigged characters are a core requirement** (Blender and Mixamo: FBX → Blender → glTF, baked actions; prove
+  retargeting early).
+- **Browser first,** iterated as artifacts; Electron later.
+- **Every UI action is a named command,** so an MCP server can wrap them after Electron.
+- **Virtual Legacy videos come before arch viz.**
+- **Game link (later idea):** a per-game mod streams the live game camera into Virtual Shot.
+- **UI references:** Connor knows Resolve, Blender 5.1, After Effects 2026 and Unreal 5.8; lay things out like them.
+- **Browser for the app: Chrome** (decided 7 Oct 2026 after Firefox measured 20× slower; LEARNINGS §7.2).
 
 ## What exists (as of 7 Oct 2026, commit `2ea5656` on `spike`)
 
@@ -55,7 +83,7 @@ Play quality: about 1.4 ms CPU and 7.5–9 ms GPU a frame (haze march 5–6.5 ms
 0.1 ms). Render quality: haze march about 160 ms one-shot, depth of field 17–31 ms; the editor refines to it in 16 slices
 when idle. Playback draws only when the shot frame changes. Shaders compile at load ("Preparing shaders…").
 
-## Open work (suggested threads)
+## Open work (suggested threads; name spike threads "Spike · <topic>")
 
 1. **Spike · Shadows.** Nothing casts shadows yet. Connor wants to push this for research. Options: shadows in the
    haze (light shafts from the screen past the remote and keyboard; biggest change, recommended first), soft surface
@@ -67,7 +95,9 @@ when idle. Playback draws only when the shot frame changes. Shaders compile at l
    against the master.
 4. **Editor gaps** (LEARNINGS §7): dockable panels, multi-select, adding objects from assets, shot list, typed-key
    editors (focus keys), gamepad free-cam, live haze noise settings.
-5. **Architecture doc edits**: LEARNINGS §4 and the "what this says about the architecture" notes in §7.
+5. **Architecture:** fold `docs/architecture-changes.md` into the architecture doc before the real build.
+6. **The real build:** after the spike, at a slower pace (TypeScript, a UI library still to pick); characters,
+   camera takes and the shot list are its early milestones.
 
 ## Where to look
 
