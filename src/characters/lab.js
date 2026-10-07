@@ -4,6 +4,8 @@
 //   ?nogpu   load and evaluate only (no renderer): numeric tests without touching the GPU
 //   ?bg      timers instead of animation frames (headless Chrome)
 //   ?scene=  scene file in scenes/ (default characters.scene.json)
+//   ?gputime WebGPU timestamp queries (research bench: GPU ms per frame)
+//   ?props   a lit test set: PSX props from /psx/ and a ground plane around the walk (research pass); ?shadows adds sun shadows
 import * as THREE from 'three/webgpu';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -16,7 +18,7 @@ import { rigFromScene, prepareClip, evalCharacter, indexTracks, retargetRestRela
   MIXAMO_TO_ROBOT, segmentError, fk, blockWeights, blockTime } from './pose.js';
 
 registerCommands(CHAR_COMMANDS);
-const Q = new URLSearchParams(location.search), NOGPU = Q.has('nogpu'), BG = Q.has('bg');
+const Q = new URLSearchParams(location.search), NOGPU = Q.has('nogpu'), BG = Q.has('bg'), GPUTIME = Q.has('gputime'), PROPS = Q.has('props'), SHADOWS = Q.has('shadows');
 const MAPS = { mixamoToRobot: MIXAMO_TO_ROBOT };
 const $ = id => document.getElementById(id);
 const E = window.E = { t: 0, playing: false, sel: { char: null, clip: null, bone: null }, pose: false, results: {}, dirty: true };
@@ -70,7 +72,7 @@ function syncInstances() {
     if (ch.type !== 'character' || G.inst[ch.id] || !E.A[ch.asset]) continue;
     const X = E.A[ch.asset], model = SkeletonUtils.clone(X.gltf.scene), group = new THREE.Group();
     group.matrixAutoUpdate = false; group.add(model); group.userData.char = ch.id;
-    model.traverse(o => { if (o.isMesh) { o.frustumCulled = false; o.castShadow = true; o.userData.char = ch.id; } });
+    model.traverse(o => { if (o.isMesh) { o.frustumCulled = false; o.castShadow = true; o.receiveShadow = SHADOWS; o.userData.char = ch.id; } });
     G.scene.add(group);
     G.inst[ch.id] = { group, model, fix: new THREE.Matrix4().fromArray(X.rig.fix), bones: X.rig.bones.map(b => model.getObjectByName(b.name)) };
   }
@@ -113,9 +115,28 @@ function draw() {
 // ---------------------------------------------------------------------------------------------------------------------
 // Viewport
 
+/** Research pass: a lit test set around the walk (PSX Mega Pack props, read in place through /psx/). */
+async function addProps() {
+  const loader = new GLTFLoader(), P = '/psx/', put = async (file, pos, yaw = 0, s = 1) => {
+    const g = await loader.loadAsync(P + file); g.scene.position.set(...pos); g.scene.rotation.y = yaw * Math.PI / 180; g.scene.scale.setScalar(s);
+    g.scene.traverse(o => { if (o.isMesh) { o.castShadow = o.receiveShadow = SHADOWS; for (const t of [o.material.map]) if (t) { t.minFilter = t.magFilter = THREE.NearestFilter; t.generateMipmaps = false; t.needsUpdate = true; } } });
+    G.scene.add(g.scene); return g.scene;
+  };
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(30, 16), new THREE.MeshStandardMaterial({ color: 0x5d5a55, roughness: 0.95 }));
+  ground.rotation.x = -Math.PI / 2; ground.receiveShadow = SHADOWS; G.scene.add(ground); G.grid.position.y = 0.002;
+  await Promise.all([
+    put('Large Props/wooden_crate_1.glb', [-7.5, 0, -2.6], 10), put('Large Props/wooden_crate_2.glb', [-6.6, 0, -3.4], -20), put('Large Props/wooden_crate_3.glb', [-7.2, 0.0, -4.2], 5),
+    put('Large Props/metal_barrel_mp_1.glb', [3.6, 0, -3.0]), put('Large Props/metal_barrel_mp_2.glb', [4.4, 0, -2.4], 40), put('Large Props/metal_barrel_mp_3.glb', [4.1, 0, -3.8], 70),
+    put('Large Props/vending_machine_1.glb', [0.5, 0, -5.2], 0), put('Large Props/supply_crate_1.glb', [-2.8, 0, -4.6], 15), put('Large Props/cardboard_box_1.glb', [2.0, 0, 3.6], 30),
+    put('Large Props/cardboard_box_2.glb', [-3.5, 0, 4.0], -10), put('Large Props/carpet_mp_1.glb', [-1.5, 0.005, 0], 90, 1),
+  ].map(p => p.catch(e => console.warn('prop', e.message))));
+  if (SHADOWS) { G.renderer.shadowMap.enabled = true; const sun = G.sun; sun.castShadow = true; sun.shadow.mapSize.set(2048, 2048);
+    Object.assign(sun.shadow.camera, { left: -10, right: 10, top: 8, bottom: -8, near: 0.5, far: 30 }); sun.shadow.bias = -0.0005; sun.position.set(-4, 9, 6); }
+}
+
 async function initGPU() {
   const canvas = $('gpu');
-  G.renderer = new THREE.WebGPURenderer({ canvas, antialias: true });
+  G.renderer = new THREE.WebGPURenderer({ canvas, antialias: true, trackTimestamp: GPUTIME });
   await G.renderer.init();
   G.renderer.setPixelRatio(Math.min(2, devicePixelRatio));
   G.scene = new THREE.Scene(); G.scene.background = new THREE.Color(0x26252a);
@@ -124,8 +145,9 @@ async function initGPU() {
   G.orbit.mouseButtons = { LEFT: null, MIDDLE: THREE.MOUSE.ROTATE, RIGHT: THREE.MOUSE.PAN }; G.orbit.update();
   G.orbit.addEventListener('change', requestRender);
   G.scene.add(new THREE.HemisphereLight(0xdfe6ff, 0x3a3430, 1.6));
-  const sun = new THREE.DirectionalLight(0xffffff, 2.2); sun.position.set(3, 6, 4); G.scene.add(sun);
-  const grid = new THREE.GridHelper(20, 40, 0x55525c, 0x34323a); G.scene.add(grid);
+  const sun = G.sun = new THREE.DirectionalLight(0xffffff, 2.2); sun.position.set(3, 6, 4); G.scene.add(sun);
+  const grid = G.grid = new THREE.GridHelper(20, 40, 0x55525c, 0x34323a); G.scene.add(grid);
+  if (PROPS) await addProps();
   G.inst = {};
   G.proxy = new THREE.Object3D(); G.scene.add(G.proxy);
   G.gizmo = new TransformControls(G.camera, canvas); G.gizmo.setMode('rotate'); G.gizmo.setSpace('local'); G.gizmo.setSize(0.7);
@@ -399,7 +421,7 @@ async function main() {
   E.doc = await (await fetch(`/scenes/${sceneName}`, { cache: 'no-store' })).json();
   const t0 = performance.now(); const { A, timing } = await loadAssets(E.doc); E.A = A; E.loadTiming = { ...timing, all: +(performance.now() - t0).toFixed(0) };
   E.cmd = createCommandStack(() => E.doc, (name) => { syncInstances(); refresh(); if (name !== 'noop') E.dirty = true; });
-  window.VS = { E, cmd: (n, a) => E.cmd.run(n, a), evalAt: (t) => evaluateAll(E.doc, t), tests: TESTS, setTime, travelFor };
+  window.VS = { E, G, cmd: (n, a) => E.cmd.run(n, a), evalAt: (t) => evaluateAll(E.doc, t), tests: TESTS, setTime, travelFor, sync: syncInstances, evaluateAll, applyResults, draw };
   if (!NOGPU) await initGPU(); else $('vpMsg').textContent = 'nogpu: evaluation only';
   syncInstances(); initTimeline(); refresh();
   $('play').onclick = () => { E.playing = !E.playing; $('play').textContent = E.playing ? 'Pause' : 'Play'; lastNow = performance.now(); };
