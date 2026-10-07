@@ -261,6 +261,7 @@ export class ShotRenderer {
     C.k.value = c.k; C.sq.value = c.squint; C.aspect.value = this.W / this.H;
     C.blur.value = this.quality === 'play' ? 1.0 / this.hazeRT.width : 0;
     this.mark('composite'); r.setRenderTarget(pixel ? this.pixelRT : null); this.comp.quad.render(r);
+    if (this.cel?.on && this.cel.stage === 'final' && !st.flat.before) this.cel.overlay(r, this.sceneRT.width, this.sceneRT.height, pixel ? this.pixelRT : null);
     if (pixel) {
       const c = cTrue, B = this.bloom, UU = this.upscale.U, f = nrm(c.target.map((v, i) => v - c.eye[i])), rr = nrm([f[1] * c.up[2] - f[2] * c.up[1], f[2] * c.up[0] - f[0] * c.up[2], f[0] * c.up[1] - f[1] * c.up[0]]);
       UU.eye.value.set(...c.eye); UU.cf.value.set(...f); UU.cr.value.set(...rr); UU.cu.value.set(rr[1] * f[2] - rr[2] * f[1], rr[2] * f[0] - rr[0] * f[2], rr[0] * f[1] - rr[1] * f[0]);
@@ -361,7 +362,7 @@ export class ShotRenderer {
     P.fD.value = D ? F.D : 0; P.ppd.value = D ? F.px : 0; P.band.value = D ? F.band : 0; P.maxc.value = D ? F.max : 0; P.edge.value = D ? F.edge : 0; P.es.value = D ? F.es : 1;
     P.sp.value.set(D ? F.sp[0] : .5, D ? 1 - F.sp[1] : .5); P.spot.value = D ? F.spot : 0; P.spr.value = D ? F.spotR : 1; P.spf.value = D ? F.spotF : 1;
     // cel look: its line art takes the pixel outlines' place (the lens reads outlineRT)
-    const cel = !!this.cel?.on, outl = !!this.pixel?.outlines && !cel; P.alt.value = outl || cel ? 1 : 0;
+    const celStage = this.cel?.on ? this.cel.stage : null, cel = celStage === 'scene', outl = !!this.pixel?.outlines && !this.cel?.on; P.alt.value = outl || cel ? 1 : 0;
     if ((outl || cel) && (this.outlineRT.width !== sw || this.outlineRT.height !== sh)) this.outlineRT.setSize(sw, sh);
     if (cel) this.cel.pass(r, cam, sw, sh, this.outlineRT);
     if (outl) { const O = this.outline;
@@ -370,6 +371,7 @@ export class ShotRenderer {
     this.mark('focus (CoC)'); r.setRenderTarget(this.cocRT); post.quads.coc.render(r);
     const sc = this.H / 1080; P.px.value.set(1 / this.W, 1 / this.H); P.sc.value = sc; P.maxR.value = D ? F.max * sc : 0; P.rs.value = (this.quality === 'play' ? (this.doc.look.haze?.play?.dofStep ?? 2) : 0.5) * sc;
     this.mark('depth of field'); r.setRenderTarget(this.finalRT); post.quads.dof.render(r);
+    if (celStage === 'post') this.cel.overlay(r, sw, sh, this.finalRT);
   }
 
   /** The pixel-stable camera: the shot camera moved in its own image plane to the nearest whole internal pixel (sized at
