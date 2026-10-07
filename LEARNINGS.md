@@ -606,6 +606,92 @@ load (three's `compileAsync` covers scene materials but not full-screen passes).
 - The default look is unchanged by all of this: frames 120/300/720/1100 are bit-identical to before the pixel look
   (PSNR infinite).
 
+## 9. Characters: rigs, clips on the timeline, retargeting, foot lock, pose mode
+
+Branch `spike-characters`, one round on 7 Oct 2026 (about 09:45–10:10 UTC). Code: `src/characters/` (`pose.js` is
+the core, `commands.js` the named commands, `lab.html`/`lab.js` a standalone lab page). Scene:
+`scenes/characters.scene.json`. Run `node server/serve.mjs 8798` and open `/src/characters/lab.html` (`?nogpu`
+evaluates without a renderer; the numeric tests are `VS.tests.retarget()`, `.purity()`, `.footSlide(id)`, `.cost()`).
+Screenshots: `Virtual Shot spike\characters\`.
+
+**Test characters.** The PSX Mega Pack has no rigged models: a scan of all 1353 GLBs in the PSX bundle on E: found no
+skins or animations. The lab uses three.js r186's example characters, downloaded to
+`Virtual Shot spike\assets\characters\` and served at `/chars/`, not committed. X Bot, Soldier and Michelle are Mixamo
+exports (Mixamo's terms allow using them in work but not redistributing the files); RobotExpressive is CC0
+(Quaternius). Nothing here went through the FBX → Blender → glTF route yet; a Mixamo export of Connor's choosing would
+test that.
+
+**What works (all checked numerically in headless Chrome without the GPU):**
+
+| Check | Result |
+|---|---|
+| Pure in t | 120 frames evaluated forward, reversed and shuffled give identical poses for all three characters |
+| Retarget X Bot walk → Soldier (same Mixamo names, different export) | three's `SkeletonUtils.retargetClip`: **113°** mean limb-direction error (legs flipped). Rest-relative: **1.4°**; with rest alignment **0.2°** |
+| Retarget X Bot walk → RobotExpressive (other names, arms-down bind pose, IK-controller feet) | three's: **80°**. Rest-relative: 39°. With rest alignment: **0.4°** (arms and thighs 0°, hips→neck 3.8°) |
+| Retarget cost per clip | rest-relative 1.5–2 ms; three's 5–8 ms (it steps an `AnimationMixer` frame by frame) |
+| Foot sliding while planted, foot lock off → on | X Bot walk with travel keyed 15% slow: **38 → 0.12 cm/s**. Soldier (retargeted): **20 → 0.14**. Robot (retargeted, travel matched to its stride): **50 → 0.08** |
+| Clip block commands | left trim keeps the motion in place; slide shifts it; undo restores; a pose key turns only its bone |
+| CPU evaluate per frame (1 / 5 / 20 characters) | IK off 0.06 / 0.17 / 0.60 ms; foot lock on 0.13 / 0.37 / 1.43 ms |
+
+**What the spike says about the plan:**
+
+1. **Don't use `AnimationMixer` for the time core.** It is stateful (it accumulates time and weights per update), so it
+   can't give the pose at an arbitrary t. Sampling each clip's keyframe tracks through their interpolants and
+   blending in our own code gives `evalCharacter(doc, ch, t, assets)`, pure in (document, assets, t) like §1.7. The
+   renderer only copies local transforms onto the bones. three's track and interpolant classes are still useful.
+2. **Clip blocks are events, as §1.4 predicted.** A block is `{clip, row, start, end, offset, speed, loop, blendIn,
+   blendOut, weight, root}`: start/end on the timeline, `offset` the clip time at `start`, so trimming the left edge
+   moves start and offset together and the motion stays put (UE Sequencer sections). Overlaps crossfade over the
+   blend ramps; weights under 1 fill with the rest pose, over 1 are normalised. Rows are only for layout.
+3. **Retarget by rest-pose deltas, not by copying world rotations.** three's retargeter copies each source bone's world
+   rotation onto the target bone, which is right only when both rigs' bones point the same way in rest. Two Mixamo
+   exports with identical bone names already differ (Soldier's leg bones are flipped 180° against X Bot's). Using
+   `dstWorld(t) = srcWorld(t) · srcRest⁻¹ · dstRest` fixes bone roll and axis differences. Aligning the target's rest
+   posture to the source's (swing each mapped bone toward its nearest mapped child, `alignRest`) fixes A-pose or
+   arms-down binds. Retargeting is a load-time bake to a new clip: derived data, recomputed when the asset or map
+   changes.
+4. **Rigs disagree in more ways than bone names, and each needs an explicit fix in the importer:**
+   - *facing*: Soldier faces −Z in its file, X Bot +Z. Each rig gets a facing yaw (from its hip positions) so every
+     character faces +Z, and the renderer applies the same yaw;
+   - *bind posture*: RobotExpressive binds with its arms down (rest alignment);
+   - *hierarchy*: the robot's thighs hang off `Body`, not `Hips`, and its feet are IK controllers parented to the root.
+     Bones whose parent differs from the source's mapping follow the bone their source parent maps to, rigidly;
+   - *names*: GLTFLoader strips `:` and `.` (`mixamorig:Hips` → `mixamorigHips`, `Foot.L` → `FootL`) and suffixes
+     duplicates (the robot's `Torso` bone became `Torso_1` because a mesh has the same name). Maps resolve both forms.
+   The document should store a per-asset rig profile (bone map, facing, rest source, leg chains) with these choices.
+5. **Foot contacts belong to the motion, not the rig.** Detected on the retargeted robot they came out fragmented
+   (its legs are proportioned differently, so the foot never sits flat for long), and each fragment re-locked in a new
+   place. Retargeted clips now inherit the source clip's contact timing, with the stride scaled by the hip-height
+   ratio. In-place clips need detection relative to the "ground": a planted foot in an in-place walk slides backward
+   at walking speed, so a contact is a low frame moving with the median velocity of all low frames.
+6. **Foot lock can stay pure in t.** While the dominant block's clip says a foot is planted, its target is the foot's
+   world position at the contact's start, found by evaluating the pose at that earlier time (without IK). An analytic
+   two-bone IK bends the leg to reach it and keeps the foot's world rotation. The lock lets go over 0.08 s *after* the
+   foot lifts; fading it inside the contact left 14 cm/s of sliding. The remaining sliding is in crossfades, where the
+   dominant block switches (X Bot over its whole range: 68 → 13 cm/s).
+7. **Retargets need foot lock whenever the character travels.** With the robot's travel set exactly to its scaled
+   stride it still slid 50 cm/s without the lock, from its leg proportions alone.
+8. **Root motion is per block** (`clip`, `inPlace`, or `accumulate`, where loops carry the stride forward). All the
+   test clips walk in place, so travel is keyed on the character (`<id>.x/.z/.yaw` tracks). "Match travel to stride"
+   is an editor command (`keyTravel`) that writes those keys from the clip's measured stride, the same pattern as
+   §1.1's layout rules.
+9. **Pose keys are typed tracks** (`prop: 'pose.<bone>'`, quaternion values, slerped), applied on top of the clips and
+   before IK. Pose mode: click a joint, rotate it with the gizmo, and the key lands at the playhead (the gizmo's world
+   rotation becomes a local offset, `d' = d · local⁻¹ · desired`). §1.3's typed-value point again: this track type
+   needs its own editor.
+
+**Not done this round:**
+- **Not in the main editor.** The lab reuses the core (commands, tracks, undo) but is its own page. Characters as
+  objects in the editor's outliner, inspector and timeline is the next step.
+- **Deferred for the GPU** (Connor's Virtual Cut job was running): renders to disk with characters, and GPU cost for
+  1, 5 and 20 skinned characters at Play and Render quality. Only two single-frame screenshots were taken.
+- Locking feet through crossfades (blend the two blocks' lock targets, or a "match root" command that sets
+  `rootOffset` so the next block starts where the last one ended). Foot lock overrides pose keys on the legs.
+- FBX → Blender → glTF with baked actions; VRM (stretch).
+
+**GPU log.** `nvidia-smi` read 7–28% utilisation (4.1 of 24.5 GB) at each check. No other spike held `.gpu.lock`;
+this spike took it twice, each time for one screenshot of about 10 s, and released it. No waits or overlaps.
+
 ## Running the spike
 
 ```
@@ -640,3 +726,4 @@ tools at it. In the page: `await VS.exportFrames([...frames], '<run>')` writes P
 | `src/artifact.html` | The artifact page |
 | `server/serve.mjs` | Local server: read-only mounts of the Black Page folder, the PSX pack and the Wii Remote; PNG writes to G: |
 | `tools/` | Engine dump, importer, checks, comparisons, artifact build |
+| `src/characters/` | Characters: pure pose evaluation, retargeting, foot lock (`pose.js`), commands, the lab page |

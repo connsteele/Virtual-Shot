@@ -26,7 +26,7 @@
   },
   "robot": {
    "url": "/chars/RobotExpressive.glb",
-   "scale": 0.8,
+   "scale": 0.5,
    "retarget": [
     {
      "from": "xbot",
@@ -260,7 +260,7 @@
     },
     {
      "t": 6,
-     "v": 2.3169,
+     "v": -0.2394,
      "curve": "linear"
     }
    ]
@@ -277,7 +277,7 @@
     },
     {
      "t": 6,
-     "v": 1.5382,
+     "v": 1.5238,
      "curve": "linear"
     }
    ]

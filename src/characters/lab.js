@@ -119,8 +119,8 @@ async function initGPU() {
   await G.renderer.init();
   G.renderer.setPixelRatio(Math.min(2, devicePixelRatio));
   G.scene = new THREE.Scene(); G.scene.background = new THREE.Color(0x26252a);
-  G.camera = new THREE.PerspectiveCamera(35, 16 / 9, 0.05, 100); G.camera.position.set(0.5, 1.7, 6.5);
-  G.orbit = new OrbitControls(G.camera, canvas); G.orbit.target.set(0, 0.9, 0);
+  G.camera = new THREE.PerspectiveCamera(35, 16 / 9, 0.05, 100); G.camera.position.set(0, 2.2, 13);
+  G.orbit = new OrbitControls(G.camera, canvas); G.orbit.target.set(0, 1.0, 0);
   G.orbit.mouseButtons = { LEFT: null, MIDDLE: THREE.MOUSE.ROTATE, RIGHT: THREE.MOUSE.PAN }; G.orbit.update();
   G.orbit.addEventListener('change', requestRender);
   G.scene.add(new THREE.HemisphereLight(0xdfe6ff, 0x3a3430, 1.6));
