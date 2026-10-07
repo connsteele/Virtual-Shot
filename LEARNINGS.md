@@ -562,6 +562,45 @@ few frames at both qualities while loading and waits for the GPU, so the wait ha
 at load. Chrome caches compiled shaders, so later loads are quick. The architecture should precompile its pipelines at
 load (three's `compileAsync` covers scene materials but not full-screen passes).
 
+## 8. Shadows (research, branch `spike-shadows`)
+
+Three shadow types, each a Show-menu toggle under "Shadows (research)", off by default. Renders to disk follow the
+viewport's shadow toggles (the rest of the look is always full). With every toggle off the picture is pixel-identical to
+`spike` (checked at f720).
+
+| Toggle | What it does | Render quality GPU | Play quality GPU |
+|---|---|---|---|
+| Light shafts in the haze (screen, ring) | each of the haze's 20x15 screen light cells is scaled by its patch's shadow map; the ringing remote's point light by its cube | haze march +4–5 ms (108 → 113 ms at f720, 134 → 139 at f1000) | +0.1–0.2 ms |
+| Soft surface shadows (screen, ring) | the surfaces' screen light × mean visibility over 12 patch maps (2x2 PCF each); the ring light × its cube (not on the remote itself) | scene pass +0.05–0.2 ms | same |
+| Contact shadows (AO) | Alchemy ambient obscurance from the distance pass, half resolution, 16 taps, 4x4 depth-aware blur, multiplied into the lens output (haze and pops not darkened, CRT glass masked) | 0.17–0.19 ms | same |
+| Shadow maps (either of the first two) | 12 screen patches (4x3, 512², 150°) + a 6-face ring cube (512²), redrawn only when a caster moves | 0.09 ms GPU; **1.2–2 ms CPU** to encode the 18 renders | same |
+
+RTX 4090, headless Chrome, `tools/shadow_eval.js` `cost()` (medians of 7). Frames and sheets:
+`G:\Claude\Virtual Legacy\Channel\Virtual Shot spike\shadows\keyframes\` (`sheets\` has off / each type / all / diff×8 per
+key frame and side views of f720).
+
+**What it showed:**
+- **The screen's shadows hardly show from the shot camera.** The camera faces the screen head-on, so every shadow the
+  screen casts falls along the view direction, behind the thing casting it. Shafts change under 0.1% of pixels by more
+  than 8/255 in the shot; they read only from the side (`f00720_side_views.jpg`: the haze under the desk line goes dark).
+  Light shafts were the recommended first step; for this shot they are the least visible of the three.
+- **The ring light's shadows and contact shadows are the ones you see:** the red glow no longer leaks onto the pad in
+  front of and under the remote, and the remote, keyboard, polaroid and the bezel's recess get grounded. The key frames
+  change 6–13% of pixels by more than 8/255, nearly all from these two.
+- **An area light needs many maps, but cheap ones.** 12 low-poly depth renders cost 0.06 ms of GPU; the CPU encode
+  (three's per-render overhead) is the real cost and matters for Play mode while the remote rumbles. Fewer patches for
+  Play, or one multiview/instanced render, would cut it.
+
+**three.js gotchas (both silent, both cost time):**
+- **A `texture()` node shared by several materials binds to the wrong slot.** One atlas node used by every body
+  material made them sample the atlas as their colour map (the whole scene brightened). Build a texture node per
+  material (`nodes()` in `shadows.js`).
+- **A node first built inside a TSL `If` is hoisted into a var that is only assigned when the branch runs.** Reusing
+  the surface position and light vector inside `If(toggle)` broke the default picture (toggle off) while the toggle-on
+  picture looked right. Declare the inputs with `.toVar()` before the `If`.
+- An override material whose target has no alpha must set `blending = NoBlending`: a transparent object makes three
+  copy `transparent` onto the override, and the pipeline fails on a RedFormat target.
+
 ## Running the spike
 
 ```

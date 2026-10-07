@@ -58,3 +58,26 @@ export async function aoBuffer(f, dir) {
   const r = await fetch(`/save-rgba/${dir}/f${String(f).padStart(5, '0')}_ao.png?w=${rt.width}&h=${rt.height}`, { method: 'POST', body: out });
   return [rt.width, rt.height, r.status];
 }
+
+/** Cost of each setup: median GPU ms per pass over reps renders (shadow maps redrawn every time, as while the remote
+ *  rumbles) and the CPU time of the shadow-map encodes. quality: 'render' | 'play'. */
+export async function cost(frames, quality = 'render', configs = ['off', 'shafts', 'surface', 'contact', 'all'], reps = 7) {
+  const { E } = window.VS, shot = E.shot, res = []; shot.setTiming(true);
+  const cpu = []; for (const S of [shot.shadows, shot.ringShadows]) { const u = S.update; S.update = (...a) => { const t = performance.now(); const r = u(...a); cpu.push(performance.now() - t); return r; }; }
+  const med = a => { const s = [...a].sort((x, y) => x - y); return s[Math.floor(s.length / 2)]; };
+  for (const f of frames) for (const name of configs) {
+    for (const k of KEYS) E.show[k] = !!CONFIGS[name][k];
+    E.frame = f; const per = {}, tot = []; cpu.length = 0;
+    for (let i = 0; i < reps + 1; i++) {
+      shot.shadows.invalidate(); shot.ringShadows.invalidate(); await shot.gpuTimes();
+      E.renderNow(quality, { output: true }); await shot.renderer.backend.device.queue.onSubmittedWorkDone();
+      const t = await shot.gpuTimes(); if (i === 0) continue;   // the first may compile
+      const p = {}; for (const x of t) { const key = x.name.replace(/ \d+\/\d+$/, ''); p[key] = (p[key] || 0) + x.ms; }
+      for (const [k, v] of Object.entries(p)) (per[k] ||= []).push(v); tot.push(Object.values(p).reduce((a, b) => a + b, 0));
+    }
+    res.push({ f, quality, name, total: +med(tot).toFixed(2), passes: Object.fromEntries(Object.entries(per).map(([k, v]) => [k, +med(v).toFixed(3)])),
+      shadowCpu: cpu.length ? +(cpu.slice(2).reduce((a, b) => a + b, 0) / Math.max(1, reps)).toFixed(2) : 0 });
+  }
+  for (const k of KEYS) E.show[k] = false;
+  return res;
+}
