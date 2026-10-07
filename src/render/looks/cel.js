@@ -13,7 +13,7 @@
 // faceTerm) don't know about the shot, so the lookdev page uses them with its own lights.
 import * as THREE from 'three/webgpu';
 import { Fn, uniform, texture, uv, vec2, vec3, vec4, float, mix, clamp, max, min, dot, normalize, length, exp, abs, acos, sign, select, If, Discard,
-  positionWorld, positionView, cameraPosition, normalWorldGeometry, normalViewGeometry, smoothstep } from 'three/tsl';
+  positionWorld, positionView, cameraPosition, normalWorldGeometry, normalViewGeometry, smoothstep, screenUV } from 'three/tsl';
 
 /** Defaults. A named look preset (`look.style: "cel"` in the scene) would carry these values. */
 export const CEL_LOOK = {
@@ -24,7 +24,7 @@ export const CEL_LOOK = {
   mid: [0.68, 0.64, 0.74],
   gain: 0.9,                    // overall exposure of the toon shading against the engine's
   fill: [0.8, 0.82, 0.9],       // ambient fill tint (flat, no ramp)
-  rim: 0.5, rimWidth: 0.3, rimSoft: 0.04, rimCol: [1, 0.95, 0.9], rimAmb: 0.02,   // rim light: strength, width in (1 - N.V), colour
+  rim: 0.5, rimPx: 5, rimRel: 0.06, rimCol: [1, 0.95, 0.9], rimAmb: 0.02,   // rim light: strength, width in output px, depth jump, colour
   lines: true,
   lineW: 2,                     // line width in output pixels
   lineCol: [0.07, 0.05, 0.09], lineTint: 0.35,   // line colour; tint mixes toward a dark shade of the surface under it
@@ -39,13 +39,13 @@ export const CEL_LOOK = {
 export function makeCelUniforms() {
   const v3 = () => uniform(new THREE.Vector3());
   return { tones: uniform(3), t1: uniform(0), t2: uniform(0.45), soft: uniform(0.03), shadow: v3(), mid: v3(), gain: uniform(1), fill: v3(),
-    rim: uniform(0), rimWidth: uniform(0.3), rimSoft: uniform(0.04), rimCol: v3(), rimAmb: uniform(0) };
+    rim: uniform(0), rimPx: uniform(5), rimRel: uniform(0.06), rimCol: v3(), rimAmb: uniform(0), px: uniform(new THREE.Vector2(1 / 1920, 1 / 1080)), gtex: null };
 }
 export function applyCelUniforms(C, look) {
   const L = { ...CEL_LOOK, ...look };
   C.tones.value = L.tones; C.t1.value = L.t1; C.t2.value = L.t2; C.soft.value = Math.max(L.soft, 0.002);
   C.shadow.value.set(...L.shadow); C.mid.value.set(...L.mid); C.gain.value = L.gain; C.fill.value.set(...L.fill);
-  C.rim.value = L.rim; C.rimWidth.value = L.rimWidth; C.rimSoft.value = Math.max(L.rimSoft, 0.002); C.rimCol.value.set(...L.rimCol); C.rimAmb.value = L.rimAmb;
+  C.rim.value = L.rim; C.rimPx.value = L.rimPx; C.rimRel.value = L.rimRel; C.rimCol.value.set(...L.rimCol); C.rimAmb.value = L.rimAmb;
   return L;
 }
 
@@ -58,9 +58,17 @@ export const ramp = (C, x) => {
   return select(C.tones.lessThan(2.5), two, three);
 };
 
-/** Rim mask from the view angle: 1 on the outer band of width C.rimWidth in (1 - N.V). */
-export const rimMask = (C, n, V) => { const f = float(1).sub(max(dot(n, V), 0)), e = float(1).sub(C.rimWidth);
-  return smoothstep(e.sub(C.rimSoft), e.add(C.rimSoft), f); };
+/** Rim mask, screen-space depth-offset style: step C.rimPx pixels outward along the surface's screen-space normal in
+ *  the G-buffer (rendered before the scene pass); if that lands on something clearly farther (or the background), this
+ *  pixel is within rimPx of a silhouette. A fresnel rim (1 - N.V) lit up whole floors and desk tops seen at grazing
+ *  angles; this one only lights real outlines, at a constant width in pixels. Needs C.gtex (the G-buffer texture). */
+export const rimMask = C => {
+  const V = normalize(positionView.negate()), nV = facingNormal(normalViewGeometry, V), d0 = length(positionView);
+  const sl = length(nV.xy), dir = nV.xy.div(max(sl, 1e-4));
+  const g = texture(C.gtex).sample(screenUV.add(vec2(dir.x, dir.y.negate()).mul(C.rimPx).mul(C.px))).level(0);
+  const d1 = select(g.z.lessThanEqual(0), float(1e4), g.z);
+  return smoothstep(C.rimRel, C.rimRel.mul(2), d1.sub(d0).div(d0)).mul(smoothstep(0.15, 0.5, sl));
+};
 
 /** The normal turned toward the viewer (double-sided meshes, cards). */
 export const facingNormal = (n, V) => select(dot(n, V).lessThan(0), n.negate(), n);
@@ -116,7 +124,7 @@ export function celBodyMaterial(U, C, { map = null, emissiveMap = null, ledRect 
     col.addAssign(c.rgb.mul(U.rc).mul(U.ri).mul(ramp(C, dot(n, rl.div(max(rd, 1e-5))))).mul(exp(rd.mul(rd).negate().div(U.rrad.mul(U.rrad)))));
     // rim: lit by the screen (on the side that faces it) plus a little constant rim so silhouettes read in the dark
     const rimL = sc.mul(keyI).mul(clamp(dot(n, L).mul(0.5).add(0.6), 0, 1)).add(C.rimAmb);
-    col.addAssign(mix(c.rgb, vec3(1), 0.5).mul(C.rimCol).mul(rimMask(C, n, V)).mul(C.rim).mul(rimL).mul(bl));
+    col.addAssign(mix(c.rgb, vec3(1), 0.5).mul(C.rimCol).mul(rimMask(C)).mul(C.rim).mul(rimL).mul(bl));
     const out = ov ? mix(col, ov.xyz, ov.w) : col;
     return vec4(out, 1);
   })();
@@ -228,7 +236,7 @@ export class CelGBuffer {
 export class CelLook {
   constructor(shot) {
     this.shot = shot; this.C = makeCelUniforms(); this.on = false; this.look = { ...CEL_LOOK };
-    this.gbuf = new CelGBuffer(); this.swaps = [];
+    this.gbuf = new CelGBuffer(); this.swaps = []; this.C.gtex = this.gbuf.rt.texture;
     let obj = 0;
     for (const root of Object.values(shot.placed)) {
       let mat = 0; const seen = new Map();
@@ -250,10 +258,15 @@ export class CelLook {
     if (on !== this.on) for (const s of this.swaps) s.mesh.material = on ? s.cel : s.base;
     this.on = on;
   }
-  /** After the scene pass: G-buffer of the same view, then the lines over the scene colour into outRT. */
-  pass(r, cam, w, h, outRT) {
+  /** Before the scene pass: the G-buffer of the same view (the toon materials read it for the rim). */
+  prepass(r, cam, w, h) {
     const shot = this.shot;
     shot.mark('cel g-buffer'); this.gbuf.render(r, cam, w, h);
+    this.C.px.value.set(1 / w, 1 / h); this.C.rimPx.value = this.look.rimPx * shot.H / shot.OH;
+  }
+  /** After the scene pass: the lines over the scene colour into outRT. */
+  pass(r, cam, w, h, outRT) {
+    const shot = this.shot;
     // the lens-overscan buffer is larger but covers a wider view by about as much, so a buffer pixel ~ an internal pixel
     applyLineUniforms(this.lines.U, this.look, { sceneH: shot.H, outH: shot.OH });
     this.lines.U.px.value.set(1 / w, 1 / h);

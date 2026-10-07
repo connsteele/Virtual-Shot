@@ -14,8 +14,8 @@ r.setPixelRatio(1); r.setSize(W, H, false); r.outputColorSpace = THREE.LinearSRG
 await r.init();
 
 // lights: key (direction to the light), sky fill, ambient
-const K = { dir: uniform(new THREE.Vector3(-0.5, 0.7, 0.5).normalize()), key: uniform(new THREE.Vector3(1.05, 0.98, 0.9)), sky: uniform(new THREE.Vector3(0.32, 0.36, 0.45)), amb: uniform(0.12) };
-const C = makeCelUniforms(); let look = applyCelUniforms(C, CEL_LOOK);
+const K = { dir: uniform(new THREE.Vector3(-0.5, 0.7, 0.5).normalize()), key: uniform(new THREE.Vector3(0.92, 0.87, 0.8)), sky: uniform(new THREE.Vector3(0.32, 0.36, 0.45)), amb: uniform(0.12) };
+const gbuf = new CelGBuffer(), C = makeCelUniforms(); C.gtex = gbuf.rt.texture; let look = applyCelUniforms(C, CEL_LOOK);
 const albedo = (map, color) => map ? texture(map, uv()) : vec4(...color, 1);
 const lambert = ({ map, color }) => { const m = new THREE.MeshBasicNodeMaterial({ side: THREE.DoubleSide });
   m.outputNode = Fn(() => { const c = albedo(map, color); If(c.a.lessThan(0.4), () => { Discard(); });
@@ -27,11 +27,11 @@ const cel = ({ map, color, face = null }) => { const m = new THREE.MeshBasicNode
     const P = positionWorld, V = normalize(cameraPosition.sub(P)), n = facingNormal(normalWorldGeometry, V);
     const x = face ? faceTerm(face, P, K.dir) : dot(n, K.dir);
     const l = K.key.mul(ramp(C, x)).add(K.sky.mul(C.fill).mul(0.75)).add(C.fill.mul(K.amb));
-    const rim = mix(c.rgb, vec3(1), 0.5).mul(C.rimCol).mul(rimMask(C, n, V)).mul(C.rim).mul(max(dot(n, K.dir).mul(0.5).add(0.6), 0).mul(0.8).add(C.rimAmb));
+    const rim = mix(c.rgb, vec3(1), 0.5).mul(C.rimCol).mul(rimMask(C)).mul(C.rim).mul(max(dot(n, K.dir).mul(0.5).add(0.6), 0).mul(0.8).add(C.rimAmb));
     return vec4(c.rgb.mul(l).mul(C.gain).add(rim), 1); })(); return m; };
 
 // props, placed around the TV table (the Black Page desk) at their own scale
-const scene = new THREE.Scene(), loader = new GLTFLoader(), gbuf = new CelGBuffer(), swaps = [];
+const scene = new THREE.Scene(), loader = new GLTFLoader(), swaps = [];
 const PSX = ['Furniture/tv_table_4.glb', 'Electronics & Misc/pc_monitor_mp_1.glb', 'Electronics & Misc/pc_keyboard_mp_2.glb',
   'Small Props/clock_1.glb', 'Small Props/jerrycan_1.glb', 'Small Props/tv_remote_mp_1.glb', 'Items & Weapons/canned_food_mp_1.glb',
   'Items & Weapons/cassette_tape_mp_1.glb', 'Small Props/car_battery_1.glb'];
@@ -76,7 +76,7 @@ const cam = new THREE.PerspectiveCamera(35, W / H, 0.02, 60);
 const cx = (hx + x) / 2;
 const VIEWS = { wide: [[cx - 0.5, 1.7, 3.6], [cx, 0.45, 0]],
   close: [[-0.75, top + 0.6, 1.25], [0, top + 0.22, tb.min.z + 0.25]], face: [[hx + 0.2, hy + 0.12, hz + 0.75], [hx, hy - 0.02, hz]] };
-const state = { cel: params.get('cel') !== '0', lines: params.get('lines') !== '0', view: params.get('view') || 'wide', keyDeg: +(params.get('key') ?? 135), keyElev: 40, debug: 0 };
+const state = { cel: params.get('cel') !== '0', lines: params.get('lines') !== '0', view: params.get('view') || 'wide', keyDeg: +(params.get('key') ?? 320), keyElev: 40, debug: 0 };
 function render(o = {}) {
   Object.assign(state, o);
   if (o.look) look = applyCelUniforms(C, { ...CEL_LOOK, ...o.look });
@@ -85,8 +85,8 @@ function render(o = {}) {
   // the face looks along +z; its right is +x
   for (const s of swaps) s.mesh.material = state.cel ? s.cel : s.base;
   const [e, t] = VIEWS[state.view]; cam.position.set(...e); cam.lookAt(...t); cam.updateMatrixWorld(true);
+  gbuf.render(r, cam, W, H); C.px.value.set(1 / W, 1 / H); C.rimPx.value = look.rimPx;
   r.setRenderTarget(sceneRT); r.clear(); r.render(scene, cam);
-  gbuf.render(r, cam, W, H);
   applyLineUniforms(lines.U, { ...look, lines: state.cel && state.lines, debug: state.debug }, { sceneH: H, outH: H }); lines.U.px.value.set(1 / W, 1 / H);
   r.setRenderTarget(null); lines.quad.render(r);
 }
@@ -100,8 +100,8 @@ async function time(n = 30) {
   r.backend.trackTimestamp = true; const names = new Map(); let seq = 1e6; const out = { scene: [], gbuffer: [], lines: [] };
   const mark = k => { r.info.frame = ++seq; names.set(seq, k); };
   for (let i = 0; i < n; i++) {
-    mark('scene'); r.setRenderTarget(sceneRT); r.clear(); r.render(scene, cam);
     mark('gbuffer'); gbuf.render(r, cam, W, H);
+    mark('scene'); r.setRenderTarget(sceneRT); r.clear(); r.render(scene, cam);
     mark('lines'); r.setRenderTarget(null); lines.quad.render(r);
     await r.resolveTimestampsAsync('render');
     const pool = r.backend.timestampQueryPool?.render; if (!pool) continue;
