@@ -606,6 +606,91 @@ load (three's `compileAsync` covers scene materials but not full-screen passes).
 - The default look is unchanged by all of this: frames 120/300/720/1100 are bit-identical to before the pixel look
   (PSNR infinite).
 
+## 9. Screenshot to shot (one still → parallax move and a matched camera)
+
+Branch `spike-screenshot-shot`. A separate page, so off by default: `/src/plate/index.html` (`src/plate/plate.js`,
+`src/plate/depth.js`). Outputs: `Virtual Shot spike\screenshot_shot\` (`screenshot_shot_sheet.jpg`,
+`screenshot_shot_reel.mp4`, and per plate `debug\`, `coverage.csv`, `report.json`, the move frames and MP4s).
+Test plates: three 640×360 Fire Emblem Engage frames from the Engage video's research frames (copied to
+`Virtual Shot spike\plates\`), and Black Page f720.
+
+**Pipeline, all in the page:**
+- **Depth:** Depth Anything v2 small (ONNX, 99 MB fp32) through transformers.js 4.3.1 on WebGPU. The model is a copy
+  in `Virtual Shot spike\models\` served at `/models/`; nothing comes from Hugging Face at run time. Load 1.4 s,
+  first inference about 1.1 s, then 150 ms a frame (1080p in, RTX 4090, headless).
+- **Plate:** a mesh with a vertex every 1–2 pixels, pushed out along each pixel's ray. Cells where inverse depth changes
+  faster than 3% per pixel are dropped (that is where the rubber sheet would stretch). A second mesh sits behind it near
+  those edges, with the depth of the farthest thing within 12 cells and colour push-pull inpainted from the far side, so
+  what a move uncovers shows plausible fill. Both are unlit `MeshBasicMaterial`, so the unmoved shot matches the
+  screenshot (44 dB on the map; 30–34 dB on the cutscene frames, where the dropped edge cells show inpainted colour).
+- **HUD:** `hud=` rectangles (timecode, dialogue box, stat panels, subtitles) are cut out of the plate, inpainted in colour
+  and depth, and drawn back on top in screen space. Without this the UI warps with the scene, which looks broken
+  immediately. Capturing with the HUD off is better still.
+- **Camera match:** a RANSAC floor plane (normal facing up in the image) inside a `floor=` rectangle gives the camera's
+  height, pitch and roll; `height=` sets the scale. A prop (PSX crate, Wii Remote) goes where the ray through `at=` meets
+  the floor, lit by a key and a hemisphere tinted from the plate, with a `ShadowMaterial` shadow catcher. The plate's
+  depth occludes it (grass in front of the crate hides its base), and a `grid=` floor overlay checks the match.
+- **Moves:** orbit about the floor normal through the prop's spot, dolly toward it, truck, crane; `zoom=` overscans.
+  `VS.exportMove()` renders frames to disk; `VS.coverage()` measures how much of the frame a pose uncovers.
+
+**What one still can and can't give you (the main finding):**
+- **Relative depth can't place the camera by itself.** Depth Anything's output is inverse depth up to an unknown scale
+  and shift. A plane stays a plane under any shift, so the floor fit can't pin it, and the shift changes the recovered
+  pitch a lot: on the map frame, far/near from 1.5 to ∞ gives a pitch of 66° to 19°. FOV can't come from one plane either.
+- **Auto shift from floor ⟂ wall was unreliable.** On frames without a clear wall the "wall" fit is noise and the angle
+  picks a wrong shift. Kept as `ratio=auto` but not used.
+- **What worked:** give the pitch (and FOV), and let the depth pick the shift whose floor matches (`pitch=`). For the
+  map I set pitch by eye against the grid overlay (tried 35°, 45° and 55°; 55° lines up with the tiles), fSpy-style.
+  A vanishing-point solve from clicked lines is the proper version (2 VPs → focal length; with one VP at infinity, as
+  in the map's head-on grid, the tile diagonals give the second). The 640×360 frames were too soft to place lines by
+  hand reliably, so it isn't built.
+- **Metric depth would remove the guesswork** (Depth Pro estimates focal length and metric depth), but its ONNX is
+  600 MB–3.8 GB and runs at 1536², too heavy for the page. Offline in Python is the route if it's needed.
+- **The floor has to be visible and marked.** The automatic floor search grabbed characters' fronts and the dialogue
+  box until it was limited to a `floor=` rectangle. The cathedral frame (a sliver of floor under subtitles) never gave
+  a usable floor (pitch −2° against an expected 5–10°), so it got parallax only, no prop.
+- **Black Page f720 is a bad plate:** haze, depth of field and near-black leave the model almost nothing (the depth is a
+  smooth blob). With the true FOV (27.5°) the fit gave pitch 24–48° (true 16.7°) and roll −10° (true +1.8°).
+  Dark, hazy, defocused frames need the camera from lines, not from depth.
+
+**How far a move goes before it breaks** (`coverage.csv`; "revealed" = extra share of the frame only the background
+layer covers, beyond the unmoved tears; "off plate" = frame edge with nothing behind it, before overscan):
+
+| Plate | Unmoved tears | Orbit 2° | Orbit 5° | Orbit 10° | Push in 25% | Push in 50% | Off plate, orbit 10° |
+|---|---|---|---|---|---|---|---|
+| Map (top-down, 55°) | 0.2% | +0.0 | +0.0 | +0.0 | +0.0 | +0.0 | 10% |
+| Wyrm (close, 15°) | 4.1% | +1.0 | +3.5 | +7.7 | +1.8 | +8.8 | 20% |
+| Cathedral (wide, flat) | 3.0% | +1.2 | +4.9 | +9.8 | +6.3 | +10.5 | 9% |
+
+- Top-down map shots are the easy case: almost no depth edges, so small moves hold; only the frame edges need overscan
+  (zoom 1.15 left 0.2–0.8% at ±8°).
+- Shots with characters in front of a background hold to about **±3–5° of orbit or a 15–25% push-in** before the
+  inpainted fill gets big enough to read as smears. ±8° (the reel) shows smearing at the silhouettes; that's the limit
+  of push-pull fill. A learned inpainting model (LaMa class) is the next thing to try if this gets used.
+- Close subjects need more overscan for the same angle (the wyrm at ±8° kept 4–6% off plate even at zoom 1.15) because
+  the pivot is near the camera.
+
+**Practical notes:**
+- 640×360 sources are soft once upscaled to 1080p. Real use needs full-res captures with the HUD off.
+- three's lights are physical (Lambert divides by π): a key of 2.5 on a dark plate rendered the crate black. Defaults
+  are key 8, fill 3. Props with metalness need an environment map (the loader sets metalness 0 for now).
+- Rendering 90 frames of a move to PNG on G: took 6–9 s per move.
+- Spike-sized: one page, no editor integration, no scene-document format for plates. For the real build a plate would
+  be a layer type (image + depth + camera + HUD rects) in the scene document, with the camera solve as a command.
+
+**Run it:**
+```
+node server/serve.mjs 8795      # /models/ and /plates/ mounts added for this spike
+MSYS_NO_PATHCONV=1 VS_BASE=http://localhost:8795 node tools/headless.mjs "/src/plate/index.html?bg&<options>" "await VS.exportMove('screenshot_shot/<plate>/orbit8','orbit',8,90)" --low
+```
+Options used for the reel:
+- map: `img=/plates/engage_map.jpg&fov=35&pitch=55&height=18&floor=0,0,1,0.78&prop=/psx/Large%20Props/wooden_crate_1.glb&propsize=2.2&at=0.56,0.66&yaw=0&sun=-30,60&hud=0,0,0.21,0.08;0,0.79,1,1&zoom=1.15`
+- wyrm: `img=/plates/engage_wyrm.jpg&fov=35&pitch=15&height=1.7&floor=0.4,0.75,1,1&prop=/psx/Large%20Props/wooden_crate_1.glb&propsize=0.7&at=0.82,0.86&yaw=-20&sun=-40,45&hud=0,0,0.17,0.075;0,0.075,0.28,1;0.14,0.26,0.36,0.47;0.84,0,1,0.06&zoom=1.15`
+- cathedral: `img=/plates/engage_cathedral.jpg&fov=35&pitch=8&height=1.7&floor=0,0.62,1,0.76&prop=none&hud=0,0,0.17,0.08;0.18,0.8,0.82,0.99&zoom=1.15`
+
+In the page, drag to orbit and use the wheel to push in. `VS.report` has the fit (shift, pitch, roll, and the pitch
+for every candidate shift); `VS.saveDebug(dir)` writes the depth, plane, edge and background images.
+
 ## Running the spike
 
 ```

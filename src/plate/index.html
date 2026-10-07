@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Screenshot to shot</title>
+<script type="importmap">
+{ "imports": {
+  "three": "/node_modules/three/build/three.webgpu.js",
+  "three/webgpu": "/node_modules/three/build/three.webgpu.js",
+  "three/tsl": "/node_modules/three/build/three.tsl.js",
+  "three/addons/": "/node_modules/three/examples/jsm/"
+} }
+</script>
+<style>
+  :root { --ink:#161516; --line:#323032; --text:#ECEFEB; --muted:#A6A3A6; color-scheme: dark; }
+  body { margin:0; background:var(--ink); color:var(--text); font:15px/1.4 system-ui, sans-serif; }
+  .page { max-width:1400px; margin:0 auto; padding:16px; display:flex; flex-direction:column; gap:12px; }
+  canvas { width:100%; height:auto; display:block; background:#000; border:1px solid var(--line); border-radius:8px; touch-action:none; cursor:grab; }
+  .muted { color:var(--muted); font-variant-numeric:tabular-nums; }
+</style>
+</head>
+<body>
+<div class="page">
+  <div><b>Screenshot to shot</b> <span class="muted">(spike) drag to orbit, wheel to push in</span></div>
+  <canvas id="gpu" width="1920" height="1080"></canvas>
+  <div class="muted" id="info">loading…</div>
+  <div class="muted">URL options: img, fov, ratio (auto or far/near), height, at=x,y, prop, propsize, yaw, sun=az,el, edge, band, step</div>
+</div>
+<script type="module" src="./plate.js"></script>
+</body>
+</html>

@@ -20,11 +20,13 @@ const MOUNTS = {
   '/psx/': 'E:/Assets/Asset Packs/PSX Humble Bundle/PSX Mega Pack 3.1.3/Models/GLB (recommended)',
   '/wii/': 'G:/GPT/Projectless/2026-10-04/gen/outputs/Wii_Remote_LowPoly',
   '/bp-final-ref/': 'G:/Claude/Virtual Legacy/Channel/Virtual Shot spike/ref_final',   // the final master, decoded to PNG
+  '/models/': 'G:/Claude/Virtual Legacy/Channel/Virtual Shot spike/models',   // ONNX models (Depth Anything), read-only
+  '/plates/': 'G:/Claude/Virtual Legacy/Channel/Virtual Shot spike/plates',   // screenshots for the screenshot-to-shot spike
 };
 const OUT = process.env.VS_OUT || 'G:/Claude/Virtual Legacy/Channel/Virtual Shot spike';
 const PORT = +(process.argv[2] || process.env.PORT || 8790);
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.mjs': 'text/javascript', '.json': 'application/json',
-  '.png': 'image/png', '.jpg': 'image/jpeg', '.glb': 'model/gltf-binary', '.woff': 'font/woff', '.woff2': 'font/woff2', '.css': 'text/css', '.wasm': 'application/wasm' };
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.glb': 'model/gltf-binary', '.woff': 'font/woff', '.woff2': 'font/woff2', '.css': 'text/css', '.wasm': 'application/wasm', '.onnx': 'application/octet-stream', '.webp': 'image/webp' };
 
 function resolveGet(urlPath) {
   for (const [pre, root] of Object.entries(MOUNTS)) if (urlPath.startsWith(pre)) return safeJoin(root, urlPath.slice(pre.length));
