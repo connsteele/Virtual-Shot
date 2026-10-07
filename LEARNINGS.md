@@ -698,6 +698,103 @@ already takes its settings as one object and its host as an interface, so the pr
 module by name and pass the scene's light sources for flares (today `shotFlares(st, ix)` knows the Black Page lights; a
 preset system would read them from the document's lights).
 
+### Research pass (7 Oct, overnight)
+
+**What was added** (all off by default; `HALO_LOOK` keeps its old values, so the build's look is unchanged):
+- `reflect.perp` / `reflect.par`: Halo's perpendicular / parallel reflection brightness (facing vs grazing), blended by
+  (1 - |N·V|)². 1 / 1 = the build's flat reflection.
+- `reflect.bump`: a bumped cube map. The bump is the base map's luminance as a height (bump × 1 cm), turned into a
+  normal with screen-space derivatives (the surface-gradient method: `dFdx`/`dFdy` of position and height, no tangents).
+- `lightmap.bits: 1`: the light term (lattice light + bleed) quantised to R5G6B5, Halo CE's 16-bit lightmap format,
+  with no dithering.
+- Lookdev: a supply crate, shotgun, pistol and a second barrel; view 3 on them; `VS.setView(i)` to change views
+  without a reload.
+
+**What real Halo CE does** (from the HEK tag docs on c20.reclaimers.net and modding references; no images copied):
+| Trait (Halo CE) | In the spike | Gap |
+|---|---|---|
+| `shader_environment`: base map, primary/secondary/micro detail maps, each with a function (double-biased multiply, multiply, double-biased add) and its own scale; base-map alpha blends the two detail maps | One world-space triplanar detail map, double-biased multiply | Two detail maps blended by a mask, plus a micro detail map; uv-space scale per material |
+| Bump maps (normal maps) on environment shaders; bumped cube reflections; lightmapped bump through per-vertex incident light directions | Bumped cube from base luminance (new, research) | Real bump maps per material; bump in the diffuse lighting too |
+| `shader_model` multipurpose map: Xbox R = specular/reflection, G = self-illumination, B = colour change, A = auxiliary/detail mask (PC/Gearbox: R aux, G self-illum, B specular, A colour change) | Derived per texel: R reflection, G self-illum, B detail | Colour change (team / armour colour through the mask) is not done |
+| Reflection: cube map with perpendicular/parallel brightness and tint colours (a fresnel-like control) | Flat, no fresnel (build); perp/par (new) | Tint colours per material |
+| Self-illumination: added to the diffuse light and *then* multiplied by the diffuse colour (black texels can't glow); animated on/off colours, plasma | Added on top, from the derived mask | Use the "light × colour" order; animation |
+| Lightmaps: radiosity baked per BSP, stored as 16-bit textures (banding in dark gradients) | Lattice-sampled analytic light + one-bounce bleed; R5G6B5 quantisation (new) | No real bake: no shadows, no texel-space lightmap |
+| Atmospheric fog (colour, start, opaque, max density) and fog planes | Both, as built | Per-shot settings |
+| Lens flares on lights and the sun, with reflections along the axis | Yes, as built | – |
+| No full-screen bloom in CE (Bungie introduced "light blooms" in Halo 2, via overbright values in destination alpha) | The build's glow pass is a quarter-size bloom from an alpha mask | That is closer to Halo 2 than CE: turn it off for an authentic CE look |
+| Xbox output 640×480, no anti-aliasing; 2003 PC at user resolution | Combine with chunky pixels at 480 lines (`halo_plus_pixels`) | – |
+
+Not verified here (my understanding, flag before relying on it): dynamic objects in CE are not lightmapped but lit from
+the BSP's lighting around them (an ambient plus a dominant light direction), and cast soft per-object shadows onto the
+level. Neither is in the spike.
+
+**Findings.**
+1. **The 16-bit lightmap is the most "2001" trait we can add cheaply.** On the lit floor it gives visible concentric
+   bands with a faint green/magenta step (G has 6 bits, R and B 5), exactly the banding of CE's lightmaps
+   (`lookdev_variants_v1/v2.jpg`, f_lm565). In the dark shot it is invisible (the light is near 0 and the haze covers it).
+2. **Perpendicular/parallel brightness helps metal read as metal.** perp 0.3 / par 1 keeps facing surfaces matte and
+   puts the cube's sheen on edges and grazing faces (monitor stand, barrel rim), more like Halo's armour and Forerunner
+   metal than the build's even sheen.
+3. **Bumped cube from base luminance is subtle at bump 1–2 and noisy at 4.** PSX base maps carry baked shading and
+   grain, so their luminance is a poor height map; it breaks the reflection into speckle on the monitor plastic. Real
+   bump maps per asset would be needed.
+4. **What makes it "unmistakably Halo" is mostly content, not shading.** With grimy PSX props (rusty barrels, a wooden
+   desk) the look reads as "an early-2000s FPS" rather than Halo: Halo's identity comes from its palette (blue-grey
+   steel, teal/purple Forerunner and Covenant surfaces, Master Chief's olive armour with a gold visor), its big skies,
+   the HUD (shield bar, motion tracker, reticle) and first-person weapon. The shading pieces that are distinctly Halo:
+   detail maps that stay sharp up close, strong cube sheen on metal with fresnel, CE's fog planes, lens flares, banded
+   lightmaps.
+5. **In the Black Page shot** the Halo pieces mostly disappear in the dark: what shows is the blue-grey fog lift, the
+   LED's flare/streak and, with `reflect.lit` 0.2 and strength 0.8, a cube sheen on the monitor body (`shot_variants.jpg`,
+   k_dark_push). Black Page is the wrong test for this look.
+6. **Extremes:** detail scale 12 at strength 1 turns surfaces into terrazzo; reflection 1 with `lit 0` turns the floor
+   into a mirror; a 20 cm lattice smears the lamp's pool into a blob. The build's defaults sit in the right place.
+7. **Bug found and fixed: bright cell-sized squares on the lookdev floor** (`lookdev\debug_square\dbg.jpg`, `dbg2.jpg`).
+   The floor lies exactly on a lattice plane (y = 0), so its pixels flip between two layers of lattice corners; the
+   reflection's `lit` factor made the difference visible as squares (5 cm, or 20 cm at `cell 0.2`). The lattice is now
+   offset half a cell along the normal (a lightmap texel sits on the surface, not across it). The squares are gone; the
+   look is otherwise nearly unchanged: Black Page frames with the look on move by RMSE 0.3–0.5% (1–3% of pixels by
+   more than 2%), because the light is now measured 2.5 cm off each surface (`shot\b_halo` vs `shot\b_halo_latticefix`).
+
+**What's missing to make it unmistakably Halo (ordered by value for effort):**
+1. A "Halo" material set for the lookdev: blue-grey brushed-steel and teal panel textures with real detail and bump
+   maps, and a test armour piece (olive, with a gold-tinted visor reflection).
+2. Colour change through a mask (armour colour), and per-material reflection tint (gold visor).
+3. Glow off by default for "CE"; keep it as an option ("Halo 2-ish").
+4. 16-bit lightmap quantisation on by default in the Halo preset.
+5. A real texel-space lightmap bake with shadows (the lattice has no occlusion), and object shadows.
+6. Two detail maps + micro detail, uv-scaled per material (needs per-asset settings in the scene document).
+
+**Recommendations for the real build.** Ship the preset as: glow 0, perp 0.4 / par 1, lightmap bits 1, bump 0 (until
+assets have bump maps), the build's detail and fog. Test it on a lit, steel-and-sky scene, not the Black Page shot.
+
+**Open questions for Connor:** is the target "Halo CE as it looked on Xbox" (480p, no bloom, banding) or "Halo as
+remembered" (with the Halo 2-style glow)? Is there a Halo-themed scene planned, so the material set can be built for it?
+
+**Frames and sheets:** `G:\Claude\Virtual Legacy\Channel\Virtual Shot spike\halo_ce\research\`
+- `sheets\lookdev_variants_v0..v3.jpg`: off, halo, fresnel, bump 1, bump 4, 16-bit lightmap, no glow, "CE" combo, extreme, no detail; four views
+- `sheets\shot_variants.jpg`: off, halo, "CE" combo, dark push; f420, f720, f1000
+- `lookdev\`, `shot\<variant>\` full-size; `bitcheck_off\` (identity check: f300, f720 = 0 differing pixels vs `baseline_spike`)
+
+**GPU cost** (headless Chrome, RTX 4090, behind the lock 11:00–11:01 UTC; medians, warm-up excluded; `research\timing.json`).
+nvidia-smi showed **43–45% utilisation from another job** during the run, so treat these as slightly pessimistic; the
+"off" and "halo" frames match the build's idle-GPU numbers within 0.1 ms.
+
+| f420 / f720, ms | off | halo (build defaults) | "CE": perp/par, bump 2, 16-bit lightmap, no glow | per-pixel light (`cell 0`) |
+|---|---|---|---|---|
+| Play frame | 5.33 / 5.14 | 5.76 / 5.76 | 5.69 / 5.68 | 5.62 / 5.53 |
+| Render frame | 144.5 / 114.2 | 145.0 / 115.3 | 144.2 / 115.6 | 144.8 / 114.8 |
+| Scene pass | 0.06 / 0.09 | 0.30 / 0.42 | 0.28 / 0.42 | 0.18 / 0.24 |
+| Glow (bright + 2 blurs) | – | 0.016 | – | 0.016 |
+| Glow + flares combine | – | 0.16 | 0.16 | 0.16 |
+
+- The bumped cube (derivatives) and the 16-bit quantisation cost nothing measurable.
+- The 8-corner light lattice is the biggest piece of the scene pass: 0.12–0.18 ms over per-pixel light. A real baked
+  lightmap (one texture fetch) would be cheaper and better (shadows).
+- The flare combine (0.16 ms) is the biggest post cost: it evaluates every flare slot at every pixel. Drawing flares
+  as sprites (quads) instead would make it nearly free.
+- Not measured: resolution scaling (all of these passes are per-pixel, so expect ~linear with pixel count).
+
 ## Running the spike
 
 ```
