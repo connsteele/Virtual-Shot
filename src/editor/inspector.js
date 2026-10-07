@@ -101,7 +101,8 @@ export class Inspector {
       <div class="prop static"><label>To frame</label><input type="number" id="rTo" value="${E.renderTo ?? E.last}" min="0" max="${E.last}" aria-label="To frame"></div>
       <div class="prop static"><label>Folder</label><input type="text" id="rDir" value="${esc(E.renderDir || 'editor_render')}" aria-label="Output folder"></div>
       <div class="note">PNG, 1920×1080, Render quality, to G:\\Claude\\Virtual Legacy\\Channel\\Virtual Shot spike\\&lt;folder&gt;. Frames always have the full look: the viewport's Show settings and hidden objects don't apply.</div>
-      <button type="button" class="primary" data-act="render" ${local ? '' : 'disabled'}>Render frames</button>
+      <div class="r-btns"><button type="button" class="primary" data-act="render" id="rStart" ${local && !E.rendering ? '' : 'disabled'}>${E.rendering ? 'Rendering…' : 'Render frames'}</button>
+        <button type="button" data-act="stopRender" id="rStop" title="Stop the render (Esc). Frames already written are kept." ${E.rendering ? '' : 'disabled'}>Stop</button></div>
       ${local ? '' : '<div class="note">Rendering to disk needs the local copy of the editor (artifacts can\'t write files).</div>'}
       <div class="progress" aria-hidden="true"><div id="rBar"></div></div><div class="note" id="rMsg"></div></div>`;
   }
@@ -144,6 +145,7 @@ export class Inspector {
 
   onButton(b) {
     const E = this.E, row = b.closest('.prop[data-target]'), act = b.dataset.act, t = E.frame / E.fps;
+    if (act === 'stopRender') return E.stopRender();
     if (act === 'render') return E.emit('renderFrames', { from: E.renderFrom ?? 0, to: E.renderTo ?? E.last, dir: E.renderDir || 'editor_render' });
     if (!row) return;
     const target = row.dataset.target, prop = row.dataset.prop, tr = this.track(target, prop), v = +row.querySelector('input').value;

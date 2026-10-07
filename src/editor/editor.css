@@ -153,3 +153,5 @@ kbd { font: 11px var(--mono); color: var(--muted); border: 1px solid var(--line-
 .st-rec { display: flex; gap: 6px; } .st-rec input { flex: 1; font-size: 12px; }
 .st-rec .rec { padding: 2px 8px; font-size: 12px; white-space: nowrap; }
 .st-rec .rec.on { background: var(--danger); border-color: var(--danger); color: var(--accent-ink); font-weight: 600; }
+
+.r-btns { display: flex; gap: 6px; }

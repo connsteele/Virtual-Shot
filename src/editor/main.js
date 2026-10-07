@@ -180,12 +180,16 @@ async function boot() {
   $('save').onclick = () => E.save();
   // ---- Render mode: frames to disk through the dev server (local copy only), from the shot camera at Render quality
   E.on('renderFrames', async ({ from, to, dir }) => {
-    if (E.rendering) return; E.rendering = true; const was = E.view; if (was !== 'camera') setView('camera');
+    if (E.rendering) return; E.rendering = true; E.renderCancel = false; const was = E.view; if (was !== 'camera') setView('camera');
+    const btns = on => { const a = document.getElementById('rStart'), b = document.getElementById('rStop');
+      if (a) { a.disabled = on; a.textContent = on ? 'Rendering…' : 'Render frames'; } if (b) b.disabled = !on; };
+    btns(true);
     const out = document.createElement('canvas'); out.width = 1920; out.height = 1080; const ox = out.getContext('2d');
     const bar = () => document.getElementById('rBar'), msg = t => { const m = document.getElementById('rMsg'); if (m) m.textContent = t; };
     const t0 = performance.now(), n = to - from + 1; let done = 0; const inflight = new Set();
     try {
       for (let f = from; f <= to; f++) {
+        if (E.renderCancel) break;
         E.frame = f; E.renderNow('render', { output: true }); ox.drawImage($('gpu'), 0, 0);
         const blob = await (await fetch(out.toDataURL('image/png'))).blob(), name = `${dir}/f${String(f).padStart(5, '0')}.png`;
         const p = (async () => { for (let i = 0; ; i++) { try { const r = await fetch('/save/' + name, { method: 'POST', body: blob }); if (r.ok) return; throw new Error('HTTP ' + r.status); }
@@ -194,14 +198,17 @@ async function boot() {
         done++; if (bar()) bar().style.width = `${done / n * 100}%`; if (done % 10 === 0) msg(`${done} of ${n} frames`);
       }
       await Promise.all(inflight);
-      msg(`Rendered ${n} frames in ${((performance.now() - t0) / 1000).toFixed(1)} s to ${dir}`);
+      const secs = ((performance.now() - t0) / 1000).toFixed(1);
+      msg(E.renderCancel ? `Stopped after ${done} of ${n} frames (${secs} s); the ${done} written to ${dir} are kept` : `Rendered ${n} frames in ${secs} s to ${dir}`);
     } catch (e) { msg('Render failed: ' + e.message); }
-    finally { E.rendering = false; if (was !== 'camera') setView(was); else E.requestRender(); }
+    finally { E.rendering = false; E.renderCancel = false; btns(false); if (was !== 'camera') setView(was); else E.requestRender(); }
   });
+  E.stopRender = () => { if (E.rendering) { E.renderCancel = true; const m = document.getElementById('rMsg'); if (m) m.textContent = 'Stopping…'; } };
   E.status = msg => { $('status').textContent = msg; clearTimeout(E._st); E._st = setTimeout(() => { $('status').textContent = ''; }, 4000); };
 
   // ---- keyboard (Blender-like where it applies: G/R/S gizmo modes, Numpad 0 camera view; Resolve/AE for transport)
   window.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && E.rendering) { e.preventDefault(); E.stopRender(); return; }
     if (e.target.matches('input, textarea, select')) return;
     const k = e.key, mod = e.ctrlKey || e.metaKey;
     if (mod && k.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? E.cmd.redo() : E.cmd.undo(); return; }
