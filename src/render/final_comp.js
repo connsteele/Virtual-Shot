@@ -3,7 +3,7 @@
 //   warp, fringe, vignette and squint) -> pops alpha-over in linear -> sRGB.
 // Plus the small passes that feed it: the screen's emission grid for lighting the haze, and a haze level meter.
 import * as THREE from 'three/webgpu';
-import { Fn, uniform, texture, uv, vec2, vec3, vec4, float, mix, clamp, max, min, dot, abs, pow, select, smoothstep, floor, Loop } from 'three/tsl';
+import { Fn, uniform, texture, uv, vec2, vec3, vec4, float, mix, clamp, max, min, dot, abs, pow, select, smoothstep, floor, log2, Loop } from 'three/tsl';
 import { sstep } from './materials.js';
 
 const quadMat = node => { const m = new THREE.NodeMaterial(); m.fragmentNode = node; m.depthTest = false; m.depthWrite = false; return m; };
@@ -80,16 +80,58 @@ export const flatScreenQuad = node => new THREE.QuadMesh(quadMat(node));
  *  texels under its footprint, weighted by how much of it each covers. At a non-integer factor (480 lines to 2160 is
  *  4.5x) every source pixel stays a hard-edged block of near-equal size, with a one-pixel blend only where a block
  *  edge falls inside an output pixel; nearest neighbour would make blocks of 4 and 5 pixels, bilinear would blur them.
- *  For upscales only (the footprint spans at most 2x2 texels). In display values, like the emulator. */
-export function makeAreaUpscale({ srcTex }) {
-  const U = { src: uniform(new THREE.Vector2(854, 480)), dst: uniform(new THREE.Vector2(3840, 2160)) };
-  const src = texture(srcTex);
+ *  For upscales only (the footprint spans at most 2x2 texels). In display values, like the emulator.
+ *  Two options of the pixel look live here too:
+ *  - U.levels > 0: each source texel is quantised to that many levels per channel with a 4x4 ordered (Bayer) dither,
+ *    like a console frame buffer at 6 (GameCube/Wii RGBA6) or 5 (PlayStation) bits per channel.
+ *  - U.detail = 1 (sharp screen): the CRT's picture at output resolution over the chunky frame. Per output pixel the
+ *    screen shader is evaluated where the camera ray meets the glass and swapped in (in linear light) for the screen
+ *    colour its source pixel was drawn with: the chunky frame keeps its haze, light and blocky screen edge (the mask is
+ *    the scene buffer's screen flag, at the internal size), and the text gets its fine detail back. Faded out where the
+ *    screen is out of focus or under the pops, and before the 3D starts. */
+export function makeAreaUpscale({ srcTex, distTex, cocTex, popsTex, crtColor }) {
+  const v3u = () => uniform(new THREE.Vector3());
+  const U = { src: uniform(new THREE.Vector2(854, 480)), dst: uniform(new THREE.Vector2(3840, 2160)), levels: uniform(0),
+    detail: uniform(0), k: uniform(0), aspect: uniform(16 / 9), tanY: uniform(0.27), eye: v3u(), cf: v3u(), cr: v3u(), cu: v3u(),
+    g00: v3u(), gn: v3u(), da: v3u(), db: v3u(), ub: uniform(new THREE.Vector4(0, 0, 1, 1)), popsOn: uniform(0), scrLines: uniform(0) };
+  const src = texture(srcTex), dist = texture(distTex), coc = texture(cocTex), pops = texture(popsTex);
+  // 4x4 Bayer threshold in [0, 1) for integer texel coordinates
+  const bayer2 = a => a.x.mul(0.5).add(a.y.mul(a.y).mul(0.75)).fract();
+  const bayer4 = a => bayer2(floor(a.mul(0.5))).mul(0.25).add(bayer2(a));
+  const warp = q => {
+    const p0 = q.mul(2).sub(1), p = vec2(p0.x.mul(U.aspect), p0.y);
+    const pw = p.mul(float(1).add(U.k.mul(dot(p, p))).div(float(1).add(U.k.mul(U.aspect.mul(U.aspect).add(1)))));
+    return select(U.k.lessThanEqual(1e-4), q, vec2(pw.x.div(U.aspect), pw.y).mul(0.5).add(0.5));
+  };
+  // output uv -> the screen shader's mesh uv (camera ray through the lens warp, onto the glass plane), then its colour
+  const meshUV = q => {
+    const qq = warp(q), ndc = vec2(qq.x.mul(2).sub(1), float(1).sub(qq.y.mul(2)));
+    const dir = U.cf.add(U.cr.mul(ndc.x.mul(U.tanY).mul(U.aspect))).add(U.cu.mul(ndc.y.mul(U.tanY)));
+    const rel = U.eye.add(dir.mul(dot(U.g00.sub(U.eye), U.gn).div(dot(dir, U.gn)))).sub(U.g00);
+    const ab = vec2(dot(rel, U.da), dot(rel, U.db));
+    return U.ub.xy.add(ab.mul(U.ub.zw.sub(U.ub.xy)));
+  };
+  const screenLin = (m, lodBias, dm) => srgbToLinear(crtColor(m, lodBias, dm).rgb);
   const node = Fn(() => {
-    const s = U.src.div(U.dst), p = uv().mul(U.dst);               // output pixel centre, in output pixels
+    const q = uv(), s = U.src.div(U.dst), p = q.mul(U.dst);        // output pixel centre, in output pixels
     const a = p.sub(0.5).mul(s), b = p.add(0.5).mul(s);              // its footprint, in source texels
     const i0 = floor(a), w = clamp(i0.add(1).sub(a).div(b.sub(a)), 0, 1);   // share of the footprint on texel i0
-    const t = (x, y) => src.sample(i0.add(vec2(x + 0.5, y + 0.5)).div(U.src)).level(0).rgb;
-    return vec4(mix(mix(t(1, 1), t(0, 1), w.x), mix(t(1, 0), t(0, 0), w.x), w.y), 1);
+    const t = (x, y) => { const ti = i0.add(vec2(x, y)), c = src.sample(ti.add(0.5).div(U.src)).level(0).rgb;
+      const L = max(U.levels, 1);
+      return select(U.levels.greaterThan(0.5), min(floor(c.mul(L).add(bayer4(ti))).div(L), vec3(1)), c); };
+    const up = mix(mix(t(1, 1), t(0, 1), w.x), mix(t(1, 0), t(0, 0), w.x), w.y);
+    // sharp screen: swap the source pixel's screen colour for this output pixel's. The source pixel's is re-evaluated as
+    // the internal render drew it (at its centre, with the chat's mip level of a source-sized footprint), so what's
+    // taken out matches what's there and no blocky ghost of the text is left behind.
+    const m = meshUV(q), lo = screenLin(meshUV(floor(q.mul(U.src)).add(0.5).div(U.src)), log2(U.dst.y.div(U.src.y)), m);
+    const onScreen = dist.sample(warp(q)).level(0).g.greaterThan(1.5);
+    const focus = float(1).sub(smoothstep(1, 3, abs(coc.sample(q).level(0).r)));
+    const wd = select(onScreen, focus, float(0)).mul(U.detail).mul(float(1).sub(pops.sample(q).level(0).a.mul(U.popsOn)));
+    // the screen's own pixel grid: U.scrLines lines (a sharper but still pixelated screen), or the output's
+    const R = select(U.scrLines.greaterThan(0), vec2(U.scrLines.mul(U.dst.x.div(U.dst.y)), U.scrLines), U.dst);
+    const hi = screenLin(meshUV(floor(q.mul(R)).add(0.5).div(R)), log2(U.dst.y.div(R.y)), m);
+    const lin = srgbToLinear(up).add(hi.sub(lo).mul(wd));
+    return vec4(select(U.detail.greaterThan(0), linearToSrgb(clamp(lin, 0, 1)), up), 1);
   })();
   return { U, quad: new THREE.QuadMesh(quadMat(node)) };
 }

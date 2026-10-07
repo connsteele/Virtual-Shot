@@ -44,7 +44,7 @@ export function makePost(tex) {
   // circle of confusion (signed px at 1080p) from the distance pass, focus band, corner softness and the stylised spot
   const coc = quadMat(Fn(() => {
     const q = uv(), qq = select(U.k.lessThanEqual(1e-4), q, warp(q, U.k));
-    const d0 = zsNode.sample(qq).r, d = select(d0.lessThanEqual(0), float(1e3), d0);
+    const zs = zsNode.sample(qq), d0 = zs.r.div(max(zs.g, 1)), d = select(d0.lessThanEqual(0), float(1e3), d0);   // g > 1: the screen flag (pixel look)
     const dD = U.fD.sub(float(1).div(d));
     const c = clamp(sign(dD).mul(max(abs(dD).sub(U.band), 0)).mul(U.ppd), U.maxc.negate(), U.maxc);
     const p0 = q.mul(2).sub(1), p = vec2(p0.x.mul(U.aspect), p0.y);

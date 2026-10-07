@@ -573,6 +573,22 @@ load (three's `compileAsync` covers scene materials but not full-screen passes).
   nearest gives 4- and 5-pixel blocks, bilinear blurs. The pass is a 4-tap shader, a few ms of headless frame time at most.
 - In the Black Page shot the effect is mild (dark, DOF-blurred); it shows on the remote's edges and the screen text.
   Chunkier options: no 4× MSAA in this mode, or fewer lines. Frames: `Virtual Shot spike\chunky_pixels_v1\`.
+- **v2** (frames: `chunky_pixels_v2\compare_2x2\`). Options in the Show menu under Chunky pixels: lines (480/360/240),
+  colour (24-bit, or 18/15-bit with a 4x4 Bayer dither per internal pixel, like a console frame buffer), screen text,
+  4× MSAA (off by default now; the jaggies are the look). Defaults: 480, no AA, 18-bit, screen text sharp at 1080.
+- **Screen text readability.** In the wide shot (about f390–600) the chat is 2–4 internal pixels tall: unreadable at
+  480 however it's filtered. Fix, mixed resolution (HD-2D style): in the upscale pass the screen shader is re-evaluated per
+  output pixel where the camera ray (through the lens warp) meets the glass plane, and swapped in, in linear light, for
+  the screen colour its internal pixel was drawn with. That one is re-evaluated too (at the pixel centre, with the chat's
+  mip level for an internal-pixel footprint), so nothing of the blocky text is left behind; subtracting a box mean
+  instead left dark fringes. Haze, light, glows and the blocky screen edge stay chunky. The mask is a screen flag in
+  the distance pass (g = 2 with r scaled by it, so r/g, which the haze and CoC read, stays the distance). Faded out when
+  the screen is out of focus (|CoC| 1–3 px), under the pops and in the flat crossfade. The screen's own grid is
+  selectable: 1080 lines (sharp but still pixelated, the default) or 4K.
+- The chat texture gets mipmaps in the pixel look (`S.mip`, lod from the uv derivatives): the engine's single taps
+  sparkle at 480.
+- GPU (headless, f420, Play quality): pixel look total is lower than the normal look (haze march 4.8 vs 11.7 ms, DOF
+  0.4 vs 4.3 ms); the upscale is 0.8 ms, 0.9 ms with the sharp screen.
 
 ## Running the spike
 

@@ -103,17 +103,23 @@ export class Viewport {
   menu() {
     const E = this.E, btn = document.getElementById('showBtn'), pop = document.getElementById('showMenu'), sel = document.getElementById('refineSel');
     const item = (k, label, note = '') => `<label class="check"><input type="checkbox" data-show="${k}"><span>${label}</span>${note ? `<span class="note">${note}</span>` : ''}</label>`;
+    const pick = (k, label, opts) => `<label class="check pick"><span>${label}</span><select data-pick="${k}">${opts.map(([v, t]) => `<option value="${v}">${t}</option>`).join('')}</select></label>`;
     pop.innerHTML = `<div class="menu-group"><div class="menu-head">Look</div>
         ${item('haze', 'Haze', 'heaviest')}${item('dof', 'Depth of field')}${item('lens', 'Lens warp')}${item('glows', 'LED glows')}
         ${item('ghosts', 'Ghost flashes')}${item('pops', 'Pops (2D)')}</div>
       <div class="menu-group"><div class="menu-head">Style</div>
-        ${item('pixels', 'Chunky pixels', '480p to 4K')}</div>
+        ${item('pixels', 'Chunky pixels', 'to 4K')}
+        ${pick('pixLines', 'Lines', [[480, '480'], [360, '360'], [240, '240']])}
+        ${pick('pixBits', 'Colour', [[0, '24-bit'], [6, '18-bit, dithered'], [5, '15-bit, dithered']])}
+        ${pick('pixScreen', 'Screen text', [[0, 'Chunky'], [1080, 'Sharp, 1080 lines'], ['full', 'Sharp, 4K']])}
+        ${item('pixAA', 'Anti-aliasing (4× MSAA)')}</div>
       <div class="menu-group"><div class="menu-head">Overlays</div>
         ${item('safe', 'Safe frames', 'camera')}${item('grid', 'Grid', 'free')}${item('frustum', 'Shot camera', 'free')}${item('hazeBox', 'Haze bounds', 'free')}
         ${item('lights', 'Lights and glass axes', 'free')}${item('bounds', 'Selection bounds', 'free')}</div>
       <div class="menu-foot"><button type="button" id="revealAll">Reveal hidden objects <kbd>Alt+H</kbd></button>
         <div class="note">Viewport only: renders to disk always use the full look. Chunky pixels applies to renders too (3840×2160).</div></div>`;
-    pop.addEventListener('change', e => { const k = e.target.dataset.show; if (k) E.setShow(k, e.target.checked); });
+    pop.addEventListener('change', e => { const k = e.target.dataset.show, p = e.target.dataset.pick;
+      if (k) E.setShow(k, e.target.checked); if (p) E.setShow(p, e.target.value === 'full' ? 'full' : +e.target.value); });
     pop.querySelector('#revealAll').onclick = () => E.revealAll();
     pop.addEventListener('toggle', e => { btn.setAttribute('aria-expanded', String(e.newState === 'open')); });
     pop.addEventListener('beforetoggle', e => { if (e.newState !== 'open') return; const r = btn.getBoundingClientRect();
@@ -122,6 +128,8 @@ export class Viewport {
     const fps = document.getElementById('fpsSel'); fps.onchange = () => E.setFpsCap(+fps.value); E.on('view', () => { fps.value = String(E.fpsCap[E.view] || 0); });
     const sync = () => {
       pop.querySelectorAll('[data-show]').forEach(i => { i.checked = !!E.show[i.dataset.show]; });
+      pop.querySelectorAll('[data-pick]').forEach(i => { i.value = String(E.show[i.dataset.pick]); i.disabled = !E.show.pixels; });
+      pop.querySelector('[data-show="pixAA"]').disabled = !E.show.pixels;
       const off = ['haze', 'dof', 'lens', 'glows', 'ghosts', 'pops'].filter(k => !E.show[k]).length;
       btn.textContent = off ? `Show (${off} off) ▾` : 'Show ▾'; sel.value = E.refineMode; fps.value = String(E.fpsCap[E.view] || 0);
       const n = E.hidden.size, h = document.getElementById('hiddenNote');

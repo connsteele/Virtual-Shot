@@ -72,6 +72,8 @@ input[type=number] { font-variant-numeric: tabular-nums; }
 .menu .check:hover { background: var(--line-strong); }
 .menu .check input { accent-color: var(--accent); margin: 0; }
 .menu .check .note { margin-left: auto; }
+.menu .pick { padding-left: 34px; color: var(--muted); }
+.menu .pick select { margin-left: auto; padding: 1px 4px; }
 .menu-foot { padding: 8px 12px 4px; display: grid; gap: 6px; }
 .menu-foot button { justify-self: start; }
 kbd { font: 11px var(--mono); color: var(--muted); border: 1px solid var(--line-strong); border-radius: 3px; padding: 0 4px; margin-left: 6px; }

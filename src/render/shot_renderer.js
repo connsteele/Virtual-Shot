@@ -24,7 +24,10 @@ const loadImage = async src => createImageBitmap(await (await fetch(src)).blob()
 export const SHOW = { haze: true, dof: true, lens: true, glows: true, ghosts: true, pops: true };
 /** The chunky-pixel look (off by default): the whole frame (3D, lens, depth of field, haze, 2D layers) is rendered at a
  *  480-line internal size, as an emulator renders a Wii game at native resolution, then area-upscaled to the output. */
-export const PIXEL_LOOK = { lines: 480, output: [3840, 2160] };
+export const PIXEL_LOOK = { lines: 480, output: [3840, 2160], msaa: false, bits: 6, sharpScreen: 1080 };
+// Options: lines (internal height), msaa (keep the 4x MSAA, softer edges), bits (0 = 24-bit colour; 6 or 5 = that many bits
+// per channel with an ordered dither), sharpScreen (the CRT's picture over the chunky frame at output resolution, true, or
+// at that many lines, e.g. 1080).
 const m4 = a => new THREE.Matrix4().fromArray(Array.from(a));
 const v3 = a => new THREE.Vector3(...a);
 
@@ -41,10 +44,17 @@ export class ShotRenderer {
     const { doc } = this, aspect = doc.output.width / doc.output.height;
     const [ow, oh] = look ? look.output : [doc.output.width, doc.output.height];
     const h = look ? look.lines : oh, w = look ? Math.round(h * aspect / 2) * 2 : ow;   // 480 lines at 16:9 -> 854 x 480
-    this.pixel = look ? { lines: h, output: [ow, oh] } : null;
+    this.pixel = look ? { ...PIXEL_LOOK, ...look, lines: h, output: [ow, oh] } : null;
     this.W = w; this.H = h; this.OW = ow; this.OH = oh;
     for (const t of [this.lensRT, this.cocRT, this.finalRT, this.pixelRT]) t.setSize(w, h);
-    this.upscale.U.src.value.set(w, h); this.upscale.U.dst.value.set(ow, oh);
+    const P = this.pixel, UU = this.upscale.U;
+    UU.src.value.set(w, h); UU.dst.value.set(ow, oh); UU.levels.value = P && P.bits ? 2 ** P.bits - 1 : 0; UU.detail.value = P && P.sharpScreen ? 1 : 0; UU.scrLines.value = P && typeof P.sharpScreen === 'number' ? P.sharpScreen : 0;
+    this.sceneRT.samples = P && !P.msaa ? 0 : 4;
+    this.screenFlag.value = P ? 1 : 0;
+    // the chat on the screen: filtered by its footprint (mipmaps) in the pixel look, the engine's single taps otherwise
+    const mip = !!P, ct = this.chatTex;
+    if (ct.generateMipmaps !== mip) { Object.assign(ct, { generateMipmaps: mip, minFilter: mip ? THREE.LinearMipmapLinearFilter : THREE.LinearFilter }); ct.dispose(); ct.needsUpdate = true; }
+    this.crt.userData.S.mip.value = mip ? 1 : 0;
     this.renderer.setSize(ow, oh, false);
   }
 
@@ -110,6 +120,9 @@ export class ShotRenderer {
           const uvA = geom.attributes.uv; let u0 = [1e9, 1e9], u1 = [-1e9, -1e9];
           for (let i = 0; i < uvA.count; i++) { u0 = [Math.min(u0[0], uvA.getX(i)), Math.min(u0[1], uvA.getY(i))]; u1 = [Math.max(u1[0], uvA.getX(i)), Math.max(u1[1], uvA.getY(i))]; }
           mesh.material = this.crt = crtMaterial({ chatTex, ghostTex, ub: [...u0, ...u1] });
+          // the pixel look flags the screen in the distance pass (g = 2, r scaled with it so r / g stays the distance)
+          const flag = this.screenFlag = uniform(0), dd = positionWorld.distance(cameraPosition);
+          this.crt.mrtNode = mrt({ dist: vec4(dd.mul(flag.add(1)), flag.add(1), 0, 1) });
           this.screenUB = [...u0, ...u1];
           // glass uv -> world (least squares over the primitive's vertices): where each part of the image emits from
           const n = pos.count, Mw = mesh.matrixWorld; let S11 = 0, Su = 0, Sv = 0, Suu = 0, Suv = 0, Svv = 0; const R = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
@@ -184,7 +197,12 @@ export class ShotRenderer {
     this.comp = makeComposite({ engineTex: this.finalRT.texture, flatTex: this.flatTex, popsTex: this.popsTex, hazeTex: this.hazeRT.texture });
     // pixel look: the composite goes to this internal-size buffer, then is area-upscaled to the canvas
     this.pixelRT = rt(this.W, this.H, { minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter });
-    this.upscale = makeAreaUpscale({ srcTex: this.pixelRT.texture });
+    this.upscale = makeAreaUpscale({ srcTex: this.pixelRT.texture, distTex: this.sceneRT.textures[1], cocTex: this.cocRT.texture,
+      popsTex: this.popsTex, crtColor: this.crt.userData.color });
+    { const gm = this.glassMap, dotp = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2], uu = dotp(gm.eu, gm.eu), uv_ = dotp(gm.eu, gm.ev), vv = dotp(gm.ev, gm.ev), det = uu * vv - uv_ * uv_;
+      // dual basis of the glass plane: rel . da = a, rel . db = b for rel = a eu + b ev
+      const da = gm.eu.map((x, c) => (vv * x - uv_ * gm.ev[c]) / det), db = gm.ev.map((x, c) => (uu * x - uv_ * gm.eu[c]) / det), UU = this.upscale.U;
+      UU.g00.value.set(...gm.p00); UU.gn.value.set(...this.ix.glass.n); UU.da.value.set(...da); UU.db.value.set(...db); UU.ub.value.set(...this.screenUB); }
     return this;
   }
 
@@ -225,7 +243,13 @@ export class ShotRenderer {
     C.k.value = c.k; C.sq.value = c.squint; C.aspect.value = this.W / this.H;
     C.blur.value = this.quality === 'play' ? 1.0 / this.hazeRT.width : 0;
     this.mark('composite'); r.setRenderTarget(pixel ? this.pixelRT : null); this.comp.quad.render(r);
-    if (pixel) { this.mark('area upscale'); r.setRenderTarget(null); this.upscale.quad.render(r); }
+    if (pixel) {
+      const UU = this.upscale.U, f = nrm(c.target.map((v, i) => v - c.eye[i])), rr = nrm([f[1] * c.up[2] - f[2] * c.up[1], f[2] * c.up[0] - f[0] * c.up[2], f[0] * c.up[1] - f[1] * c.up[0]]);
+      UU.eye.value.set(...c.eye); UU.cf.value.set(...f); UU.cr.value.set(...rr); UU.cu.value.set(rr[1] * f[2] - rr[2] * f[1], rr[2] * f[0] - rr[0] * f[2], rr[0] * f[1] - rr[1] * f[0]);
+      UU.tanY.value = Math.tan(c.fovRender * Math.PI / 360); UU.aspect.value = this.W / this.H; UU.k.value = c.k;
+      UU.popsOn.value = C.popsOn.value; UU.detail.value = this.pixel.sharpScreen && !st.flat.before ? 1 - st.flat.overlay : 0;
+      this.mark('area upscale'); r.setRenderTarget(null); this.upscale.quad.render(r);
+    }
   }
 
   /** The haze for this frame: the screen's light grid, then the ray march into hazeRT (a fraction of the scene buffer). */

@@ -1,7 +1,7 @@
 // TSL materials: the Black Page engine's GLSL rewritten as three.js node graphs (WebGPU first, WebGL2 fallback).
 import * as THREE from 'three/webgpu';
 import { Fn, uniform, uniformArray, texture, uv, vec2, vec3, vec4, float, mix, clamp, max, min, dot, normalize, length, exp, sin, abs, pow,
-  positionWorld, normalWorldGeometry, If, Discard, select, mrt } from 'three/tsl';
+  positionWorld, normalWorldGeometry, If, Discard, select, mrt, dFdx, dFdy, log2 } from 'three/tsl';
 
 /** smoothstep that also works with edge0 > edge1 (GLSL drivers allow it; WGSL's builtin does not promise it). */
 export const sstep = (e0, e1, x) => { const t = clamp(float(x).sub(e0).div(float(e1).sub(e0)), 0, 1); return t.mul(t).mul(float(3).sub(t.mul(2))); };
@@ -57,13 +57,15 @@ export function bodyMaterial(U, { map = null, emissiveMap = null, ledRect = [2, 
 export function crtMaterial({ chatTex, ghostTex, ub }) {
   const S = {
     fx: uniform(0), time: uniform(0), ub: uniform(new THREE.Vector4(...ub)),
+    mip: uniform(0),   // 1 = filter the chat by its footprint (mipmaps; the chunky-pixel look), 0 = the engine's point-sized taps
     gr: uniformArray([0, 1, 2, 3].map(() => new THREE.Vector4(0, 0, 1, 1))),
     gp: uniformArray([0, 1, 2, 3].map(() => new THREE.Vector4(.5, .5, 1, 1))),
     ga: uniformArray([0, 0, 0, 0], 'float'), gm: uniformArray([0, 0, 0, 0], 'float'),
   };
   // A plain builder, called inside each material's own Fn: shared Fn functions that read uniforms break when two
   // materials use them (the generated WGSL function refers to the first material's uniform block).
-  const color = meshUV => {
+  // lodBias / derivUV: the chat's mip level for another footprint (log2 scale) or another uv's derivatives; see makeAreaUpscale
+  const color = (meshUV, lodBias = 0, derivUV = meshUV) => {
     const ubv = S.ub;
     const q0 = meshUV.sub(ubv.xy).div(ubv.zw.sub(ubv.xy));
     const c0 = q0.sub(0.5);
@@ -72,7 +74,8 @@ export function crtMaterial({ chatTex, ghostTex, ub }) {
     const s = vec2(mix(0.0625, 0.9375, q.x), q.y);
     const inside = s.y.greaterThan(0).and(s.y.lessThan(1)).and(q.x.greaterThan(0)).and(q.x.lessThan(1));
     const px = vec2(S.fx.div(1920), 0);
-    const tex = vec3(texture(chatTex, s.add(px)).level(0).r, texture(chatTex, s).level(0).g, texture(chatTex, s.sub(px)).level(0).b);
+    const fs = derivUV.sub(ubv.xy).div(ubv.zw.sub(ubv.xy)).mul(vec2(0.875 / 1.05, 1 / 1.05)).mul(vec2(chatTex.image.width, chatTex.image.height)), lod = max(log2(max(length(dFdx(fs)), length(dFdy(fs)))).add(lodBias), 0).mul(S.mip);
+    const tex = vec3(texture(chatTex, s.add(px)).level(lod).r, texture(chatTex, s).level(lod).g, texture(chatTex, s.sub(px)).level(lod).b);
     const col = select(inside, tex, vec3(0)).toVar();
     const scan = sin(g.y.mul(900)).mul(0.22).add(0.78);
     const vig = sstep(0.75, 0.25, length(c.mul(vec2(1, 1.2))));
