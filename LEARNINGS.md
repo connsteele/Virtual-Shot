@@ -696,6 +696,27 @@ over the camera kit's gamepad take, f600–700).
 would need a second set of bone textures), blur the haze by reprojecting its march with the camera's velocity, and a
 tile-max velocity pass for very long blurs.
 
+### Research pass (motion blur)
+
+- **How the industry does it.** Film cameras and offline renderers (Cycles, Arnold) integrate over the open shutter,
+  which is what the camera kit's sub-frame accumulation does. Real-time engines use a velocity buffer with a
+  reconstruction filter (McGuire et al. 2012, as in Unreal and Unity HDRP): tile-max velocity, neighbour-max dilation
+  and a depth-aware gather. This spike has the gather but not the tile-max/neighbour-max passes, so **silhouettes of fast
+  objects don't smear outward past their own pixels**. That's the main visual gap against Unreal's motion blur. It
+  matters for whip pans over thin objects (the remote's ring) and for character limbs.
+- **Accuracy against the exact blur** (180°, RMSE in 8-bit levels against 8-sample accumulation): during the take's whip
+  pan the velocity blur halves the error of a sharp frame (f615: 0.38 vs 0.66; f620: 0.42 vs 0.85). It can't reproduce
+  the haze's blur (the haze is composited after the gather), or changes in lighting and the 2D layers within the shutter.
+- **Comparisons across separate page loads are noisy** (about 9 levels RMSE between two renders of the same frame and
+  settings): the pops layer's glitch frames aren't stable across loads. Fair comparisons render both versions in the same
+  page, as the build round did. The pops' randomness should be seeded by time, like everything else.
+- **Cost stays at 0.25 ms** at 1080 (velocity 0.02 ms, gather 0.23 ms); the gather scales with pixels × taps, so about
+  1 ms at 4K or with 32 taps.
+- **Recommendations:** velocity blur as the Play and preview default and accumulation for finals; add tile-max and
+  neighbour-max (two small passes) before shipping; blur the haze by reprojecting it with the camera's velocity; supply
+  open/close bone matrices for skinned characters (the characters spike evaluates poses as pure functions of t, so the
+  pose at t ± shutter/2 is free to compute).
+
 ## Running the spike
 
 ```
