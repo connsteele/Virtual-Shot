@@ -657,6 +657,37 @@ cel spike's first timing run, which that spike retook. The sequences (take, blur
 **Next:** `amount` as a keyable track, blend-out at take ends, a takes list (keep every take in the document and pick one,
 as Unreal's Take Recorder does), the per-object velocity blur compared against this accumulation, and a real gamepad test.
 
+### Research pass (camera kit)
+
+**Handheld vs real handheld footage.** The defaults measure 0.25° RMS of yaw with an RMS angular speed of 0.56°/s and a
+mean oscillation near 1 Hz (60 s analysed at 240 Hz); amount 0.3 gives 0.08° and 0.17°/s. Published camera-shake
+studies and stabiliser specs put a person holding a light camera at roughly 0.1–0.5° of sway with most energy between 0.5
+and 3 Hz, plus a small physiological tremor at 8–12 Hz. The two-octave noise covers the sway and the hand jitter. It
+has no tremor band (a third octave, very small) and **no correlation with the camera's own moves**: a real operator's shake
+grows when they start and stop a move, and drifts back after it. Recommendations: key `amount` as a track; add an optional
+"settle" term driven by the rig's acceleration (shake proportional to |d²pose/dt²|, decaying); offer a recorded-shake
+option (a phone's gyro or a stabiliser log played back as the noise source) for real footage character.
+
+**Take thinning, measured.** Key count is driven by how often the operator changes direction, not by stick noise. On a
+synthetic 10 s take with a new stick rate every 0.5 s: 176 keys at 0.01°, 101 at 0.05°, 79 at 0.1°, 50 at 0.25°, 39 at
+0.5° (every fit within its tolerance). Smoothing the samples before fitting saves 20–40% of keys but rounds the corners
+(the error to the raw take grows to 0.2–0.9°). Recommendation: default tolerance 0.05° for angles and 0.002 glass widths
+for pans (about 5–10 keys a second of active flying), no pre-smoothing, and a per-take "simplify" slider in the graph
+editor that refits at a coarser tolerance, as Blender's Decimate and After Effects' Smoother do.
+
+**Shutter accumulation, measured** (f620 of the take, 180°, with another job holding about 40% of the GPU, so these are
+upper bounds): 4 samples 0.86 s, 8 samples 2.2 s, 16 samples 4.2 s, 32 samples 9.0 s, 64 samples 17.6 s, linear at
+about 270 ms a sample (the haze march dominates). Against the 64-sample frame, 4 samples are 9.2 levels RMSE off (visible
+steps in fast blur), 8 samples 1.0, 32 samples 0.4. **8 samples is the knee**; 16 for whip pans.
+
+**Device losses.** The shutter path lost the WebGPU device twice more in this pass (`DXGI_ERROR_DEVICE_HUNG`), even
+with one sample per GPU wait, both times while another process held about 40% of the GPU. One sample is a full
+Render-quality frame (the haze march alone is 120–270 ms), and with the GPU shared a single submit can approach the
+driver's 2 s watchdog. The angle sweep (90/180/360°) was cut short by these; only 180° has clean comparisons (in the
+motion-blur branch). Recommendation for the real build: **slice each sample's haze march** (the editor already slices
+it into 16 bands for the idle refine) so no submit exceeds ~50 ms, and treat device loss as recoverable (rebuild the
+renderer and resume the render from the last written frame).
+
 ## Running the spike
 
 ```
