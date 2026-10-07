@@ -6,7 +6,8 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { bodyMaterial, crtMaterial, glowMaterial, makeLightUniforms } from './materials.js';
 import { makePost } from './post.js';
 import { makeHaze } from './haze.js';
-import { makeScreenShadows } from './shadows.js';
+import { makeScreenShadows, makePointShadows } from './shadows.js';
+import { makeAO } from './ao.js';
 import { makeComposite, makeHazeMeter, makeEmitAverage, flatScreenQuad } from './final_comp.js';
 import { indexDoc } from '../core/evaluate.js';
 import { add, scl, xf, nrm, trsOf } from '../core/vec.js';
@@ -22,9 +23,14 @@ export const assetUrl = ref => {
 // ImageBitmap, not <img>.decode(): decode() never settles while the tab is hidden, and renders run in background tabs.
 const loadImage = async src => createImageBitmap(await (await fetch(src)).blob(), { premultiplyAlpha: 'none', colorSpaceConversion: 'none' });
 /** Parts of the look the editor can turn off in its viewport (all on for renders). */
-export const SHOW = { haze: true, dof: true, lens: true, glows: true, ghosts: true, pops: true, shafts: false, softShadows: false };
+export const SHOW = { haze: true, dof: true, lens: true, glows: true, ghosts: true, pops: true, shafts: false, softShadows: false, contact: false };
 /** The shadow toggles (research): off by default; renders to disk follow the viewport's choice. */
-export const SHADOW_KEYS = ['shafts', 'softShadows'];
+export const SHADOW_KEYS = ['shafts', 'softShadows', 'contact'];
+/** Forward, right and up of an evaluated camera (eye, target, up). */
+const camBasis = c => {
+  const f = nrm(c.target.map((v, i) => v - c.eye[i])), rr = nrm([f[1] * c.up[2] - f[2] * c.up[1], f[2] * c.up[0] - f[0] * c.up[2], f[0] * c.up[1] - f[1] * c.up[0]]);
+  return [f, rr, [rr[1] * f[2] - rr[2] * f[1], rr[2] * f[0] - rr[0] * f[2], rr[0] * f[1] - rr[1] * f[0]]];
+};
 const m4 = a => new THREE.Matrix4().fromArray(Array.from(a));
 const v3 = a => new THREE.Vector3(...a);
 
@@ -72,7 +78,7 @@ export class ShotRenderer {
       const bin = Uint8Array.from(atob((await (await fetch(url)).text()).trim()), c => c.charCodeAt(0));
       return loader.parseAsync(bin.buffer, '');
     };
-    const sh = this.shadows = makeScreenShadows(doc.look.shadows);
+    const sh = this.shadows = makeScreenShadows(doc.look.shadows?.screen), rsh = this.ringShadows = makePointShadows(doc.look.shadows?.ring);
     const ledRect = ix.obj.led.texelRect, ledTargets = new Set(ix.obj.led.appliesTo || []);
     this.ledParts = []; this.placed = {};
     for (const o of doc.objects) {
@@ -111,7 +117,7 @@ export class ShotRenderer {
         }
         const isLed = ledRe && ledRe.test(nodeName);
         const ov = isLed ? uniform(new THREE.Vector4(0, 0, 0, 0)) : null;
-        mesh.material = bodyMaterial(U, { map: src.map, emissiveMap: src.emissiveMap, ledRect: ledTargets.has(o.id) ? ledRect : [2, 2, 2, 2], ov, sh });
+        mesh.material = bodyMaterial(U, { map: src.map, emissiveMap: src.emissiveMap, ledRect: ledTargets.has(o.id) ? ledRect : [2, 2, 2, 2], ov, sh, rsh: o.ring ? null : rsh });
         if (isLed) this.ledParts.push({ mesh, ov, c0: a0.map((v, c) => (v + a1[c]) / 2) });
       }
       const M = Array.from(root.matrix.elements), ctrLocal = mn.map((v, c) => (v + mx[c]) / 2);
@@ -130,7 +136,7 @@ export class ShotRenderer {
     for (const o of doc.objects.filter(o => o.type === 'card')) {
       const im = await loadImage(assetUrl(doc.assets[o.texture])), tx = new THREE.Texture(im);
       Object.assign(tx, { flipY: false, generateMipmaps: false, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, colorSpace: THREE.NoColorSpace, needsUpdate: true });
-      const mesh = new THREE.Mesh(quad, bodyMaterial(U, { map: tx, scMul: 1.15, blMul: o.brightness || 1.4, rawLed: true, sh }));
+      const mesh = new THREE.Mesh(quad, bodyMaterial(U, { map: tx, scMul: 1.15, blMul: o.brightness || 1.4, rawLed: true, sh, rsh }));
       mesh.matrixAutoUpdate = false; mesh.matrix.copy(m4(trsOf(o.transform))); mesh.userData.docId = o.id; this.placed[o.id] = mesh; scene.add(mesh);
     }
     // glows: four for the ringing LEDs, one for the power LED
@@ -148,6 +154,8 @@ export class ShotRenderer {
     // Blending for MRT targets is read from the renderer-level MRT (not the material's mrtNode): 'dist' follows each
     // material, so opaque surfaces overwrite it and the additive glows (which output dist 0) leave it untouched.
     this.sceneMRT = mrt({ output, dist: vec4(positionWorld.distance(cameraPosition), 1, 0, 1) }).setBlendMode('dist', new THREE.BlendMode(THREE.MaterialBlending));
+    this.aoRT = rt(Math.round(this.W / 2), Math.round(this.H / 2), { type: THREE.HalfFloatType, format: THREE.RedFormat });
+    this.ao = makeAO({ distTex: this.sceneRT.textures[1], aoTex: this.aoRT.texture, look: doc.look.shadows?.contact });
     this.post = makePost({ src: this.sceneRT.textures[0], zs: this.sceneRT.textures[1], lens: this.lensRT.texture, coc: this.cocRT.texture, final: this.finalRT.texture });
 
     // final look: haze, layers and the composite (doc.look.haze, doc.layers)
@@ -164,7 +172,7 @@ export class ShotRenderer {
       this.emitFlat = flatScreenQuad(Fn(() => crtColor(vec2(ub[0], ub[1]).add(uv().mul(vec2(ub[2] - ub[0], ub[3] - ub[1])))))());
       this.emitAvg = makeEmitAverage({ hiTex: this.emitHiRT.texture, gx, gy });
       this.emitAvg.U.screenLight.value = HZ.screenLight ?? 100;
-      this.haze = makeHaze({ distTex: this.sceneRT.textures[1], emitTex: this.emitRT.texture, look: HZ, shadows: this.shadows });
+      this.haze = makeHaze({ distTex: this.sceneRT.textures[1], emitTex: this.emitRT.texture, look: HZ, shadows: this.shadows, ringShadows: this.ringShadows });
       this.meterRT = rt(480, 270, { type: THREE.FloatType });
       this.meter = makeHazeMeter({ hazeTex: this.hazeRT.texture });
     }
@@ -231,8 +239,7 @@ export class ShotRenderer {
     this.emitAvg.U.screenLight.value = HZ.screenLight ?? 100;
     this.mark('haze light grid'); r.setRenderTarget(this.emitHiRT); this.emitFlat.render(r);
     this.mark('haze light grid avg'); r.setRenderTarget(this.emitRT); this.emitAvg.quad.render(r);
-    const f = nrm(c.target.map((v, i) => v - c.eye[i])), rr = nrm([f[1] * c.up[2] - f[2] * c.up[1], f[2] * c.up[0] - f[0] * c.up[2], f[0] * c.up[1] - f[1] * c.up[0]]);
-    const uu = [rr[1] * f[2] - rr[2] * f[1], rr[2] * f[0] - rr[0] * f[2], rr[0] * f[1] - rr[1] * f[0]];
+    const [f, rr, uu] = camBasis(c);
     H.eye.value.set(...c.eye); H.cf.value.set(...f); H.cr.value.set(...rr); H.cu.value.set(...uu);
     H.tanY.value = Math.tan(c.fovRender * Math.PI / 360); H.aspect.value = this.W / this.H; H.t.value = st.t; H.frame.value = st.frame;
     H.g00.value.set(...gm.p00); H.geu.value.set(...gm.eu); H.gev.value.set(...gm.ev); H.gn.value.set(...this.ix.glass.n);
@@ -289,9 +296,14 @@ export class ShotRenderer {
     // the glows hide with their object in the viewport (the ring's with the remote, the power LED's with the model it sits on)
     if (R && R.lvl > 0.01 && R.glow > 0 && this.ringNode?.visible !== false) R.leds.forEach((p, i) => setGlow(this.glows[i], p, 0.007 * R.glow, R.col, R.lvl * 0.5));
     if (led.intensity > 0 && (!this.anyHidden || this.ledHost()?.visible !== false)) setGlow(this.glows[4], add(led.pos, scl(led.n, W_ * .006)), W_ * .03 * led.size, led.color, led.intensity * .6);
-    // screen shadow maps, when a shadow toggle is on (redrawn only when something that casts has moved)
+    // shadow maps (the screen's patches, the ringing remote's cube), when a shadow toggle is on (redrawn only when something that casts has moved)
     const SH = this.shadows; SH.U.shafts.value = show.shafts ? 1 : 0; SH.U.surface.value = show.softShadows ? 1 : 0;
-    if (show.shafts || show.softShadows) SH.update(r, this.scene, { gm: this.glassMap, n: g.n, hide: [this.crtMesh, ...this.glows], casters: Object.values(this.placed), mark: n => this.mark(n) });
+    const RS = this.ringShadows; RS.U.shafts.value = SH.U.shafts.value; RS.U.surface.value = SH.U.surface.value;
+    if (show.shafts || show.softShadows) {
+      const casters = Object.values(this.placed), mark = n => this.mark(n);
+      SH.update(r, this.scene, { gm: this.glassMap, n: g.n, hide: [this.crtMesh, ...this.glows], casters, mark });
+      if (R) RS.update(r, this.scene, { pos: R.pos, hide: this.glows, casters, mark });   // the remote's light, while it rings
+    }
     // scene pass: the buffer grows with the lens overscan so the centre stays sharp
     const scale = c.k > 1e-4 ? Math.min(2, Math.ceil(c.ov * 2) / 2) : 1, sw = Math.round(this.W * scale), sh = Math.round(this.H * scale);
     if (this.sceneRT.width !== sw || this.sceneRT.height !== sh) this.sceneRT.setSize(sw, sh);
@@ -302,9 +314,23 @@ export class ShotRenderer {
     P.fD.value = D ? F.D : 0; P.ppd.value = D ? F.px : 0; P.band.value = D ? F.band : 0; P.maxc.value = D ? F.max : 0; P.edge.value = D ? F.edge : 0; P.es.value = D ? F.es : 1;
     P.sp.value.set(D ? F.sp[0] : .5, D ? 1 - F.sp[1] : .5); P.spot.value = D ? F.spot : 0; P.spr.value = D ? F.spotR : 1; P.spf.value = D ? F.spotF : 1;
     this.mark('lens'); r.setRenderTarget(this.lensRT); post.quads.lens.render(r);
+    if (show.contact) this.contactAO(c, sw, sh);
     this.mark('focus (CoC)'); r.setRenderTarget(this.cocRT); post.quads.coc.render(r);
     const sc = this.H / 1080; P.px.value.set(1 / this.W, 1 / this.H); P.sc.value = sc; P.maxR.value = D ? F.max * sc : 0; P.rs.value = (this.quality === 'play' ? (this.doc.look.haze?.play?.dofStep ?? 2) : 0.5) * sc;
     this.mark('depth of field'); r.setRenderTarget(this.finalRT); post.quads.dof.render(r);
+  }
+
+  /** Contact shadows (Show menu, off by default): ambient obscurance from the distance pass at half the scene buffer,
+   *  multiplied into the lens output before depth of field. */
+  contactAO(c, sw, sh) {
+    const r = this.renderer, A = this.ao.U, [f, rr, uu] = camBasis(c);
+    const aw = Math.round(sw / 2), ah = Math.round(sh / 2);
+    if (this.aoRT.width !== aw || this.aoRT.height !== ah) this.aoRT.setSize(aw, ah);
+    A.eye.value.set(...c.eye); A.cf.value.set(...f); A.cr.value.set(...rr); A.cu.value.set(...uu);
+    A.tanY.value = Math.tan(c.fovRender * Math.PI / 360); A.aspect.value = this.W / this.H; A.px.value.set(1 / aw, 1 / ah); A.bufH.value = ah; A.k.value = c.k;
+    const g = this.ix.glass; A.gc.value.set(...g.ctr); A.gr.value.set(...g.r); A.gu.value.set(...g.u); A.gn.value.set(...g.n); A.gh.value.set(g.W / 2, g.H / 2);
+    this.mark('contact AO'); r.setRenderTarget(this.aoRT); this.ao.pass.render(r);
+    this.mark('contact AO apply'); const ac = r.autoClear; r.autoClear = false; r.setRenderTarget(this.lensRT); this.ao.apply.render(r); r.autoClear = ac;
   }
 
   /** After the document changed (editor commands, undo): re-index it and move placed objects to their transforms. */

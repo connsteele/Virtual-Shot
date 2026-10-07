@@ -19,7 +19,7 @@ export function makeLightUniforms() {
 /** The engine's body shader: the CRT is the light (soft forward lobe, distance falloff), a bounce off the unseen room,
  *  the power LED's teal spill (and its texel glowing), emissive texture, the ringing remote's red light, and an
  *  override colour for the remote's LEDs. Unlit otherwise; no colour management (values are display-referred). */
-export function bodyMaterial(U, { map = null, emissiveMap = null, ledRect = [2, 2, 2, 2], ov = null, scMul = 1, blMul = 1, rawLed = false, sh = null }) {
+export function bodyMaterial(U, { map = null, emissiveMap = null, ledRect = [2, 2, 2, 2], ov = null, scMul = 1, blMul = 1, rawLed = false, sh = null, rsh = null }) {
   const m = new THREE.MeshBasicNodeMaterial({ side: THREE.DoubleSide });
   const lr = vec4(...ledRect);
   m.outputNode = Fn(() => {
@@ -51,7 +51,13 @@ export function bodyMaterial(U, { map = null, emissiveMap = null, ledRect = [2, 
     if (emissiveMap) col.addAssign(texture(emissiveMap, v).rgb.mul(U.eStr));
     // the ringing remote lights what's around it
     const rl = U.rp.sub(P), rd = length(rl);
-    col.addAssign(c.rgb.mul(U.rc).mul(U.ri).mul(exp(rd.mul(rd).negate().div(U.rrad.mul(U.rrad)))).mul(max(dot(n, rl.div(max(rd, 1e-5))), 0.2)));
+    let ring = c.rgb.mul(U.rc).mul(U.ri).mul(exp(rd.mul(rd).negate().div(U.rrad.mul(U.rrad)))).mul(max(dot(n, rl.div(max(rd, 1e-5))), 0.2));
+    if (rsh) {   // shadows from the ringing remote's light (Show menu, off by default); the remote itself is the emitter
+      const rv = float(1).toVar(), xr = P.add(select(dot(n, rl).lessThan(0), n.negate(), n).mul(0.002)).toVar();
+      If(rsh.U.surface.greaterThan(0.5).and(U.ri.greaterThan(0)), () => { rv.assign(rsh.nodes().vis(xr, { pcf: true })); });
+      ring = ring.mul(rv);
+    }
+    col.addAssign(ring);
     const out = ov ? mix(col, ov.xyz, ov.w) : col;
     return vec4(out, 1);
   })();

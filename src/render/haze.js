@@ -13,7 +13,7 @@ import { noiseTex4, fbm4 } from './cycles_noise.js';
 
 const quadMat = node => { const m = new THREE.NodeMaterial(); m.fragmentNode = node; m.depthTest = false; m.depthWrite = false; return m; };
 
-export function makeHaze({ distTex, emitTex, look, shadows = null }) {
+export function makeHaze({ distTex, emitTex, look, shadows = null, ringShadows = null }) {
   const H = look;   // doc.look.haze
   const U = {
     eye: uniform(new THREE.Vector3()), cr: uniform(new THREE.Vector3()), cu: uniform(new THREE.Vector3()), cf: uniform(new THREE.Vector3()),
@@ -67,7 +67,13 @@ export function makeHaze({ distTex, emitTex, look, shadows = null }) {
     }
     for (const [P, I] of [[U.ringPos, U.ringI], [U.ledPos, U.ledI]]) {
       const dv = x.sub(P), d2 = max(dot(dv, dv), 1e-6), dl = dv.div(sqrt(d2));
-      acc.addAssign(I.div(d2).mul(hg(dot(dl, vd))));
+      let c = I.div(d2).mul(hg(dot(dl, vd)));
+      if (P === U.ringPos && ringShadows) {   // shafts from the ringing remote's light
+        const rv = float(1).toVar(), RS = ringShadows;
+        If(RS.U.shafts.greaterThan(0.5).and(I.x.greaterThan(0)), () => { rv.assign(RS.nodes().vis(x)); });
+        c = c.mul(rv);
+      }
+      acc.addAssign(c);
     }
     return acc;
   }, { x: 'vec3', vd: 'vec3', return: 'vec3' });
