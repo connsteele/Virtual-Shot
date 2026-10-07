@@ -710,6 +710,114 @@ screenshot), and removed it; no waits, no overlap with another holder. No render
 Effort: one round. The earlier session on this was halted before it wrote anything to the worktree, so this round
 started from scratch.
 
+### Research pass (7 Oct overnight, `object-anim-research`)
+
+New: `tools/stress_object_anim.mjs` (Node, no GPU: evaluate cost against counts, chain depth, behaviours, constraints,
+scrub order; also writes `scenes/_stress/cubes_{0,10,50,200}.scene.json`, which are not committed) and
+`src/research/object_anim_bench.js` (in the editor via `import()`: per-pass GPU and CPU parts, scrub, stills and clips
+from the shot camera or the free view). Neither runs by default; no shipped code changed.
+
+Outputs: `Virtual Shot spike\object_anim\research\`: `cpu_stress.json`, `gpu_cubes_{0,10,50,200}.json`,
+`stress_200_cubes_f720.png`, `sheet_demo_camera_vs_lit.png` (top: shot camera, bottom: free view, frames 750 / 930 /
+1110), `clips\demo_camera.mp4` and `clips\demo_free_lit.mp4` (f600–1170, every 3rd frame at 20 fps), and
+`parity\` (frames 300 and 720 from this branch and from the main checkout on `spike`).
+
+**Default look:** frames 300 and 720 of Black Page rendered on this branch and on `spike` (main checkout, its own
+server) differ in **0 pixels** (ImageMagick AE 0). This confirms the build round's hash check.
+
+**GPU:** lock held about 5 min, from 8% utilisation, with no other holder and no waits.
+
+**Evaluate cost, CPU only** (`evaluate()` for the whole shot, ms per frame, best of 3; Black Page alone 0.011 ms):
+
+| Case | ms / frame | Per object |
+|---|---|---|
+| 1 / 10 / 100 / 1,000 / 5,000 objects, 6 keyed tracks each (pos + rot, 4 keys) | 0.019 / 0.055 / 0.35 / 3.6 / 21.9 | 3.4–4.4 µs |
+| `indexDoc` (runs on every command) for the same | 0.016 / 0.039 / 0.33 / 3.8 / 14.2 | |
+| 1,000 objects + noise / + shake, bob, spin / + all five behaviours | 5.4 / 12.2 / 16.0 | +1.7 / +8.6 / +12.4 µs |
+| 1,000 look-at (one moving target) / 1,000 follow-path | 5.0 / 6.0 | +1.4 / +2.4 µs |
+| Parent chain depth 10 / 100 / 1,000 / 3,000 / 10,000 (each link keyed) | 0.06 / 0.46 / 4.5 / 14.6 / 54 | about 4.5 µs per link |
+| Scrub, 1,000 keyed objects: sequential / random order | 4.4 / 3.6 | (same: no state) |
+
+- Linear in objects and in chain depth, with no state, so scrubbing costs the same as playing (random order was even
+  faster here: noise). Depth 10,000 still indexes (the recursive topological sort didn't overflow) and evaluates; a
+  2-cycle is refused at index time, and so is a self-reference (an object looking at itself), which is right but needs
+  a friendly message in the editor.
+- Budget: 1,000 animated objects fit a Play frame (3.6 ms); behaviours are the expensive part (shake + bob + spin is
+  about 3x a keyed transform). `indexDoc` at 1,000 objects is 3.8 ms *per command*, so a gizmo drag on a big scene
+  re-indexes every pointer move: index incrementally, or only re-index the objects a command touched.
+- Euler per-axis keys: a 0 → (90°, 90°, 0) turn leaves the shortest (slerp) path by up to **19.5°** mid-way. This is
+  After Effects' and Blender's behaviour too (both default to Euler channels), but it's the wobble animators fight; a
+  quaternion track mode is the fix (UE Sequencer stores Euler on its rotation channels too, with its own wind-up
+  handling).
+
+**In the renderer** (editor, Black Page at frame 700+, test cubes with keys + a baked clip + noise each; frame CPU
+excludes evaluate, which runs before the frame's timer):
+
+| Animated models | 0 | 10 | 50 | 200 |
+|---|---|---|---|---|
+| evaluate (time core), ms | 0.06–0.08 | 0.2 | 0.43 | 1.3 |
+| `applyObjects` (matrices + `AnimationMixer` poses), ms | 0.01 | 0.04 | 0.16 | 0.53 |
+| three encode + upload, Play, ms | 1.47 | 1.75 | 2.04 | 3.47 |
+| GPU `scene` pass, ms | 0.09 | 0.09 | 0.10 | 0.12 |
+| GPU frame total, Play / Render, ms | 5.1 / 114.5 | 5.1 / 114.7 | 5.1 / 114.3 | 5.1 / 114.2 |
+| Scrub (random frames, Play): frame CPU / wall, ms | 2.7 / 11.0 | 2.7 / 10.8 | 3.0 / 11.0 | 4.5 / 12.5 |
+
+Object animation is a CPU cost (about 10 µs per animated model all-in, mostly the draw call and the mixer), and
+negligible on the GPU. A mixer posed at an absolute time (`action.time = …; mixer.update(0)`) costs about 2.5 µs per
+model and is scrub-safe.
+
+**Where it shows.** In the shot camera, most of the demo's animation is barely readable (frames 750–1110: the camera
+is on the glass, the pops cover the frame, and the cube and rider are small and dark at the bottom edge). In the free
+view the rail, the pickup, the pad sliding with the remote parented to it, the red LED and the keyboard vanishing all
+read clearly. But "lit for editing" is still dim: only the ambient is raised. For a real lit check the free view
+needs a brighter work light (a key + fill independent of the shot's lighting), like Blender's Solid/Workbench mode.
+
+**Against After Effects, Blender and Unreal Sequencer:**
+
+| Concept | Here | After Effects | Blender | UE Sequencer |
+|---|---|---|---|---|
+| Keys | per-property tracks, curve into the key, presets, Bézier handles | same (per property, temporal ease, speed graph) | F-curves per channel, interpolation per key | channels per section, key interpolation per key |
+| Static value vs keys | static value on the object; stopwatch off writes the value at the playhead back | same model (stopwatch) | values live on the object until keyed; no write-back problem | default value per channel, plus spawnable or possessable state |
+| Parenting | `parent` id, local transform, `setParent` keeps the world pose | parent pick-whip keeps the world pose (Alt to jump) | parent with "keep transform" or a parent-inverse matrix | attach track (sections), socket |
+| Constraints | attach, look-at, follow path, each with a keyable influence | expressions (`lookAt()`), auto-orient, motion paths from position keys | a constraint stack with influence; "Child Of" with set/clear inverse; Follow Path with an offset | Attach / Path / Look-At constraint tracks as sections with weight; Control Rig for more |
+| Pick up / put down | attach with Hold-keyed influence | parent swap at a frame, or expressions | Child Of influence keys (the classic pop needs "set inverse" at the switch) | attach section start/end with "preserve" rules |
+| Procedural motion | behaviours (shake, bob, spin, flicker, noise), keyable weight, seeded per object id | `wiggle()` expressions, Wiggler | F-curve modifiers (Noise, Cycles) | noise on camera shake; procedural via Blueprints |
+| Clip timing | clips with start, speed, offset, loop, fade-in, keyable weight | precomps with time remap | NLA strips (scale, repeat, blend in/out, influence) | animation sections (start offset, play rate, loop, ease in/out, weight) |
+
+What matches: the model is the AE and Blender one (properties keyed per channel, a stopwatch, parent with keep-world,
+weighted constraints evaluated after parenting, procedural noise layered on keys). What's different:
+
+1. **Attach pops.** Blender's "Child Of" and UE's Attach sections both handle the switch moment with an explicit
+   inverse or "keep world" offset. Ours snaps to `target × offset`, so picking something up mid-air jumps unless the
+   offset was set at that frame. A "set offset from current pose" command (Blender's Set Inverse) is the missing piece.
+2. **Constraints and the gizmo**: Blender lets you move a constrained object (it edits the pre-constraint value), and
+   "Apply Visual Transform" bakes it. We hide the gizmo; adopt Blender's answer.
+3. **Behaviours vs expressions**: AE's `wiggle()` is the common pattern, but expressions are code in the document.
+   Our registry with seeded, keyable parameters is closer to Blender's F-curve modifiers, and safer (data, not code).
+   Keep it; add a time window (start/end) per behaviour, since weight keys are clumsy for that.
+4. **Clips**: our clip list is UE-section-like, but blending is "later clip fades over earlier"; UE and the NLA also
+   allow explicit blend-out and per-section additive mode. Characters (`spike-characters`) use blocks with
+   blendIn/blendOut and rows: **one clip-block model should serve both** (characters and baked glTF props).
+5. **Rotation**: all three default to Euler channels; Blender and UE also offer quaternion rotation modes. Add a
+   quaternion track type when characters land (`spike-characters` already uses one for pose keys).
+
+**Recommendations for the real build.**
+1. Keep: tracks per property, static values on the object, ids for constraints, behaviours and clips, the
+   "animated set" split (static objects take the old path: this is what makes 0-pixel parity cheap), and
+   absolute-time mixer posing.
+2. Change: index incrementally (per command, the touched objects and their dependants); merge object clips and
+   character clip blocks into one block model; add "set attach offset at playhead"; gizmo edits pre-constraint values;
+   a behaviour time window; a quaternion rotation mode.
+3. The free view needs a real work light to judge animation in a lit scene.
+4. Costs are not a concern at shot scale (tens of objects): about 4 µs per keyed object in evaluate, about 10 µs per
+   animated model in the renderer, and no measurable GPU.
+5. Look presets: object animation is independent of `look.style`; a preset only needs to name which behaviours it
+   implies (e.g. a "VHS" look adding camera shake), stored as ordinary behaviours so they stay keyable.
+
+**Open questions for Connor.** Which of these does the Black Page work actually need beyond the demo (pick up and put
+down? remote handling?), and should behaviours be per object only, or also on the camera rig (a handheld shake)?
+
+
 ## Running the spike
 
 ```
