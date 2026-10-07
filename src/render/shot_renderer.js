@@ -8,7 +8,7 @@ import { makePost, makeOutline } from './post.js';
 import { makeHaze } from './haze.js';
 import { makeComposite, makeHazeMeter, makeEmitAverage, makeAreaUpscale, makeBloom, flatScreenQuad } from './final_comp.js';
 import { indexDoc } from '../core/evaluate.js';
-import { makeSpell } from './particles.js';
+import { makeSpell, spellLight } from './particles.js';
 import { add, scl, xf, nrm, trsOf } from '../core/vec.js';
 
 /** Asset reference -> URL. psx:, wii:, bp: are read-only mounts of the original folders on the dev server;
@@ -65,8 +65,8 @@ export class ShotRenderer {
 
   /** GPU particles (off by default): draw the document's `particles` events (src/render/particles.js). A renderer
    *  setting like the pixel look, so renders to disk follow it. Emitters are built on first use and kept per event. */
-  setParticles(on) {
-    this.particlesOn = !!on;
+  setParticles(on, { light = 0 } = {}) {
+    this.particlesOn = !!on; this.particleLight = +light || 0;   // light: the effect's light gain (0 = it lights nothing, the build's look)
     if (!on || this.fxScene) return;
     this.fxScene = new THREE.Scene(); this.fx = new Map();
     // the particle pass draws over the scene buffer; colour adds (the material's blending), distance takes the minimum,
@@ -367,6 +367,9 @@ export class ShotRenderer {
     U.eStr.value = (ix.obj.wii.emission ?? 1.5) * rk;
     const R = st.ring;
     U.rp.value.set(...(R ? R.pos : [0, 0, 0])); U.rc.value.set(...(R ? R.col : [0, 0, 0])); U.ri.value = R ? R.lvl * R.light : 0; U.rrad.value = R ? R.rad : 1;
+    // research: the first live particle event lights the scene (bodyMaterial's effect light), off unless setParticles(on, { light })
+    const X = this.particlesOn && this.particleLight && st.particles?.[0], XL = X ? spellLight(X.ev, X.age) : null;
+    U.xp.value.set(...(X ? X.origin : [0, 0, 0])); U.xc.value.set(...(XL ? XL.color : [0, 0, 0])); U.xi.value = XL ? XL.level * this.particleLight : 0; U.xrad.value = XL ? XL.radius : 0.1;
     for (const p of this.ledParts) p.ov.value.set(...(R ? [...R.col.map(v => v * (R.ember + R.lvl * R.I)), 1] : [0, 0, 0, 0]));
     if (this.wiiRoot) { this.wiiRoot.matrix.copy(this.wiiRoot.userData.base); if (R && R.rum) this.wiiRoot.matrix.premultiply(m4(R.rum)); this.wiiRoot.updateMatrixWorld(true); }
     // screen

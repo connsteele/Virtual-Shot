@@ -14,6 +14,8 @@ export function makeLightUniforms() {
     amb: uniform(0), si: uniform(4.5), bp: uniform(new THREE.Vector3()), bi: uniform(0), bl: uniform(1),
     rp: uniform(new THREE.Vector3()), rc: uniform(new THREE.Vector3()), ri: uniform(0), rrad: uniform(1), eStr: uniform(0),
     bands: uniform(0),   // > 0: banded lighting (pixel look), that many steps per doubling of each light's falloff
+    // a particle effect's light (research, off = xi 0): a point light at the effect's core, closed-form envelope (particles.js spellLight)
+    xp: uniform(new THREE.Vector3()), xc: uniform(new THREE.Vector3()), xi: uniform(0), xrad: uniform(0.1),
   };
 }
 
@@ -48,6 +50,9 @@ export function bodyMaterial(U, { map = null, emissiveMap = null, ledRect = [2, 
     // the ringing remote lights what's around it
     const rl = U.rp.sub(P), rd = length(rl);
     col.addAssign(c.rgb.mul(U.rc).mul(U.ri).mul(band(exp(rd.mul(rd).negate().div(U.rrad.mul(U.rrad))).mul(max(dot(n, rl.div(max(rd, 1e-5))), 0.2)))));
+    // a particle effect lights what's around it (xi = 0 unless Show > Effects > Particle light): inverse square past xrad
+    const xl = U.xp.sub(P), xd = length(xl), xr = xd.div(U.xrad);
+    col.addAssign(c.rgb.mul(U.xc).mul(U.xi).mul(band(max(dot(n, xl.div(max(xd, 1e-5))), 0.1).div(xr.mul(xr).add(1)))));
     const out = ov ? mix(col, ov.xyz, ov.w) : col;
     return vec4(out, 1);
   })();

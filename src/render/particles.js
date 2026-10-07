@@ -28,6 +28,19 @@ export const spellParams = ev => merge(SPELL_DEFAULTS, ev);
 /** Total particle count of an event (for stats). */
 export const particleCount = ev => { const p = spellParams(ev), d = p.density; return ['sparks', 'ring', 'core', 'embers'].reduce((s, k) => s + Math.round(p[k].count * (k === 'core' ? 1 : d)), 0); };
 
+/** The effect as a light (research): a point light at the core whose level follows the core's closed-form envelope
+ *  (flash, sustain, out) plus the sparks' early burst, so it is a pure function of age like the particles. Colour goes
+ *  from hot (the flash) to colour a. Returns { level, color: [r, g, b], radius } (display values, radius in metres). */
+export function spellLight(ev, age) {
+  const P = spellParams(ev), C = P.colors, L = P.core.life, a = age;
+  if (a < 0 || a > Math.max(L, P.dur)) return { level: 0, color: [0, 0, 0], radius: 1 };
+  const ss = (e0, e1, x) => { const t = Math.min(Math.max((x - e0) / (e1 - e0), 0), 1); return t * t * (3 - 2 * t); };
+  const env = Math.min(a * 14, 1) * (1 - ss(L * 0.55, L, a)) * 0.85, flash = Math.exp(-9 * a) * 1.6 + 0.35;
+  const sparks = Math.min(a * 10, 1) * Math.exp(-1.6 * a) * 0.6;
+  const hot = hexRGB(C.hot), ca = hexRGB(C.a), f = Math.min(1, Math.exp(-6 * a));
+  return { level: (env * flash + sparks) * P.intensity, color: ca.map((v, i) => v + (hot[i] - v) * f), radius: (P.light?.radius ?? 0.12) * P.scale };
+}
+
 /**
  * Build the sprites for one particles event. Returns { group, U, update(state) } where state = { age, origin }.
  * Each layer is one THREE.Sprite drawn `count` times (SpriteNodeMaterial billboards it; positionNode/scaleNode are

@@ -118,7 +118,8 @@ export class Viewport {
         ${pick('pixBloom', 'Bloom (Wii)', [[0, 'Off'], [0.5, 'Soft'], [1, 'Strong']])}
         ${item('pixStable', 'Pixel-stable camera', 'experimental')}</div>
       <div class="menu-group"><div class="menu-head">Effects</div>
-        ${item('particles', 'Particles', 'GPU, spike')}</div>
+        ${item('particles', 'Particles', 'GPU, spike')}
+        ${pick('particleLight', 'Particle light', [[0, 'Off'], [1, 'On'], [2, 'Strong']])}</div>
       <div class="menu-group"><div class="menu-head">Overlays</div>
         ${item('safe', 'Safe frames', 'camera')}${item('grid', 'Grid', 'free')}${item('frustum', 'Shot camera', 'free')}${item('hazeBox', 'Haze bounds', 'free')}
         ${item('lights', 'Lights and glass axes', 'free')}${item('bounds', 'Selection bounds', 'free')}</div>

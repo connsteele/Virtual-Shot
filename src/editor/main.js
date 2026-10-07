@@ -55,7 +55,7 @@ async function boot() {
   window.VS = { perf: { report: () => E.perf.report(), on: v => E.perf.toggle(v !== false) }, E, cmd: (n, a) => E.cmd.run(n, a), commands: () => E.cmd.list(), evaluate: t => evaluate(E.doc, t, shot.geo, E.ix) };
 
   // ---- viewport visibility (Blender's eye toggles and overlays, Unreal's Show menu): editor-only, kept in this browser
-  E.show = { ...SHOW, pixels: false, pixLines: 480, pixBits: 6, pixAA: false, pixScreen: 1080, pixOutlines: false, pixBands: 0, pixBloom: 0, pixStable: false, particles: false, safe: true, grid: true, frustum: true, hazeBox: true, lights: true, bounds: true };
+  E.show = { ...SHOW, pixels: false, pixLines: 480, pixBits: 6, pixAA: false, pixScreen: 1080, pixOutlines: false, pixBands: 0, pixBloom: 0, pixStable: false, particles: false, particleLight: 0, safe: true, grid: true, frustum: true, hazeBox: true, lights: true, bounds: true };
   E.hidden = new Set(); E.refineMode = 'idle'; E.fpsCap = { camera: 0, free: 0 };   // 0 = the display's rate
   const viewKey = 'vs-editor-view:' + doc.name;
   try { const v = JSON.parse(localStorage.getItem(viewKey) || 'null');
@@ -69,8 +69,10 @@ async function boot() {
   if (E.show.pixels) applyPixels();
   // GPU particles (the document's particle events): a renderer setting too, off by default; ?particles turns it on
   if (params.has('particles')) E.show.particles = true;
-  shot.setParticles(E.show.particles);
-  E.setShow = (k, on) => { E.show[k] = on; if (k.startsWith('pix')) applyPixels(); if (k === 'particles') shot.setParticles(on); keepView(); E.emit('show'); E.requestRender(); };
+  if (params.has('plight')) E.show.particleLight = +(params.get('plight') || 1);
+  const applyParticles = () => shot.setParticles(E.show.particles, { light: +E.show.particleLight || 0 });
+  applyParticles();
+  E.setShow = (k, on) => { E.show[k] = on; if (k.startsWith('pix')) applyPixels(); if (k === 'particles' || k === 'particleLight') applyParticles(); keepView(); E.emit('show'); E.requestRender(); };
   E.setHidden = (id, hide) => { hide ? E.hidden.add(id) : E.hidden.delete(id); keepView(); E.emit('show'); E.requestRender(); };
   E.revealAll = () => { E.hidden.clear(); keepView(); E.emit('show'); E.requestRender(); };
   E.setFpsCap = n => { E.fpsCap[E.view] = n; keepView(); E.emit('show'); };
