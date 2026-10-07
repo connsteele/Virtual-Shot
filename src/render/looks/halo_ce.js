@@ -22,14 +22,17 @@
 //    axis through the frame centre), occlusion-tested against the distance buffer.
 import * as THREE from 'three/webgpu';
 import { Fn, uniform, uniformArray, texture, cubeTexture, uv, vec2, vec3, vec4, float, mix, clamp, max, min, dot, normalize, length, exp,
-  abs, pow, positionWorld, normalWorldGeometry, cameraPosition, If, Discard, select, smoothstep, floor, fract, reflect, atan, cos, mrt } from 'three/tsl';
+  abs, pow, positionWorld, normalWorldGeometry, cameraPosition, If, Discard, select, smoothstep, floor, fract, reflect, atan, cos, mrt, dFdx, dFdy, cross, sign } from 'three/tsl';
 
 /** The look's settings. Fog numbers are metres in the scene (Black Page is desk-sized). Colours are display values. */
 export const HALO_LOOK = {
   detail: { scale: 6, strength: 0.45 },        // detail tiles per metre (world-space, triplanar; 256 px a tile), strength 0..1
-  reflect: { strength: 0.35, lit: 0.75 },     // cube reflection under the mask; lit: 0 = always full, 1 = scaled by the local light
+  reflect: { strength: 0.35, lit: 0.75,      // cube reflection under the mask; lit: 0 = always full, 1 = scaled by the local light
+    perp: 1, par: 1,                          // research pass: Halo's perpendicular / parallel brightness (facing vs grazing); 1, 1 = no fresnel
+    bump: 0 },                                // research pass: bumped cube map, the bump derived from the base map's luminance (0 = flat)
   selfIllum: 1,                               // derived self-illumination strength (texels that read as lamps / LEDs)
-  lightmap: { cell: 0.05, bleed: 0.5 },         // lattice cell (m; 0 = per pixel) and colour-bleed strength
+  lightmap: { cell: 0.05, bleed: 0.5, bits: 0 },   // lattice cell (m; 0 = per pixel), colour-bleed strength; bits: research pass,
+                                              //  1 = quantise the light to a 16-bit R5G6B5 lightmap (banding in dark gradients), 0 = off
   fog: { color: [0.11, 0.13, 0.16], start: 0.45, opaque: 4.5, max: 0.5, planeY: -0.25, planeDepth: 0.6, planeMax: 0.35 },
   sky: 'fog',                                 // 'fog': the void is fog-coloured; 'cube': the generic cube, fogged
   glow: 0.4, flares: 1,
@@ -102,6 +105,7 @@ const NF = 8;   // lens flares
 function makeHaloUniforms() {
   return {
     detScale: uniform(9), detStr: uniform(1), refl: uniform(0.45), reflLit: uniform(0.75), si: uniform(1), cell: uniform(0.05), bleed: uniform(1),
+    perp: uniform(1), par: uniform(1), bump: uniform(0), lmBits: uniform(0),
     fogC: uniform(new THREE.Vector3()), fogStart: uniform(0.45), fogEnd: uniform(4.5), fogMax: uniform(0.5),
     planeY: uniform(-0.25), planeDepth: uniform(0.6), planeMax: uniform(0.35), sky: uniform(0),
     vp: uniformArray([...Array(NV)].map(() => new THREE.Vector4(0, -100, 0, 0.1))),   // VPL position (xyz) and radius (w)
@@ -170,6 +174,8 @@ export function haloBodyMaterial(U, H, tex, { map = null, emissiveMap = null, le
       const ce = max(dot(vn.xyz, Ld).mul(0.8).add(0.2), 0), cr = max(dot(n, Ld.negate()).mul(0.8).add(0.2), 0);
       light.addAssign(vc.xyz.mul(ce.mul(cr).div(d2.add(vp.w.mul(vp.w))).mul(H.bleed).mul(1 / Math.PI)));
     }
+    // research pass: a 16-bit lightmap (R5G6B5, Halo CE's lightmap bitmaps), the light quantised on the lattice's scale (0..2)
+    If(H.lmBits.greaterThan(0.5), () => { const q = vec3(31, 63, 31).div(2); light.assign(floor(clamp(light, 0, 2).mul(q).add(0.5)).div(q)); });
     const col = c.mul(light).toVar();
     // the LED texel glows (as in bodyMaterial), emissive texture, derived self-illumination
     const inRect = v.x.greaterThan(lr.x).and(v.x.lessThan(lr.z)).and(v.y.greaterThan(lr.y)).and(v.y.lessThan(lr.w));
@@ -178,9 +184,16 @@ export function haloBodyMaterial(U, H, tex, { map = null, emissiveMap = null, le
     if (em) { col.addAssign(em.mul(U.eStr)); glow.assign(max(glow, mG.mul(min(U.eStr, 1)).mul(0.35))); }
     else { col.addAssign(c.mul(mG).mul(H.si)); glow.assign(max(glow, mG.mul(min(H.si, 1)))); }
     // cubemap reflection under the mask, no fresnel; optionally dimmed where the light is low
-    const Vd = normalize(P.sub(cameraPosition)), env = cubeTexture(tex.cube, reflect(Vd, n)).rgb;
+    // research pass: a bumped cube map (the bump is the base map's luminance, through screen-space derivatives: the
+    // surface-gradient method, no tangents needed) and Halo's perpendicular / parallel brightness
+    const Vd = normalize(P.sub(cameraPosition));
+    const dpx = dFdx(P), dpy = dFdy(P), r1 = cross(dpy, n), r2 = cross(n, dpx), dt = dot(dpx, r1);
+    const hgt = lum.mul(H.bump.mul(0.01)), grad = r1.mul(dFdx(hgt)).add(r2.mul(dFdy(hgt))).mul(sign(dt));
+    const nb = select(H.bump.greaterThan(0), normalize(n.mul(abs(dt)).sub(grad)), n);
+    const env = cubeTexture(tex.cube, reflect(Vd, nb)).rgb;
+    const fres = mix(H.perp, H.par, pow(float(1).sub(abs(dot(Vd, nb))), 2));
     const lit = mix(float(1), clamp(dot(light, vec3(0.333)), 0, 1), H.reflLit);
-    col.addAssign(env.mul(mR).mul(H.refl).mul(lit));
+    col.addAssign(env.mul(mR).mul(H.refl).mul(lit).mul(fres));
     const out = ov ? mix(col, ov.xyz, ov.w) : col;
     if (ov) glow.assign(max(glow, ov.w));
     return vec4(mix(out, H.fogC, fogAmount(H, P)), glow);
@@ -294,6 +307,7 @@ export class HaloCE {
       const L = this.look, H = this.H;
       H.detScale.value = L.detail.scale; H.detStr.value = L.detail.strength; H.refl.value = L.reflect.strength; H.reflLit.value = L.reflect.lit;
       H.si.value = L.selfIllum; H.cell.value = L.lightmap.cell; H.bleed.value = L.lightmap.bleed;
+      H.perp.value = L.reflect.perp ?? 1; H.par.value = L.reflect.par ?? 1; H.bump.value = L.reflect.bump ?? 0; H.lmBits.value = L.lightmap.bits ?? 0;
       const F = L.fog; H.fogC.value.set(...F.color); H.fogStart.value = F.start; H.fogEnd.value = F.opaque; H.fogMax.value = F.max;
       H.planeY.value = F.planeY ?? -1e3; H.planeDepth.value = F.planeDepth ?? 1; H.planeMax.value = F.planeMax ?? 0; H.sky.value = L.sky === 'cube' ? 1 : 0;
       this.post.U.glow.value = L.glow; this.post.U.flares.value = L.flares;

@@ -24,6 +24,11 @@ const PROPS = [
   ['psx:Large Props/metal_barrel_mp_1.glb', 1.2, 0.2, 0, null],
   ['psx:Large Props/vending_machine_1.glb', -1.55, -0.3, 20, null],
   ['psx:Lighting/lamp_1_on.glb', 0.85, -0.45, 0, null],
+  // research pass: military props (Halo's crates and guns), on the floor to the right
+  ['psx:Large Props/supply_crate_1.glb', 2.0, 0.9, -25, null],
+  ['psx:Items & Weapons/shotgun_1.glb', 1.55, 1.25, 80, null],
+  ['psx:Items & Weapons/pistol_mp_1.glb', 1.15, 1.2, 30, null],
+  ['psx:Large Props/metal_barrel_mp_2.glb', 2.55, 0.1, 0, null],
 ];
 /** The Halo CE settings for a lit room: bright blue-grey fog farther out, the generic cube as the sky. */
 const LOOKDEV_HALO = { ...HALO_LOOK, sky: 'cube', reflect: { strength: 0.35, lit: 0.3 },
@@ -32,6 +37,7 @@ const VIEWS = [
   { eye: [0.4, 1.55, 3.6], target: [-0.1, 0.65, 0], fov: 38 },
   { eye: [0.25, 1.15, 1.25], target: [0, 0.8, 0], fov: 40 },
   { eye: [1.6, 1.0, 1.6], target: [0.8, 0.55, 0], fov: 42 },
+  { eye: [1.0, 1.35, 3.9], target: [1.9, 0.35, 0.6], fov: 40 },   // 3: the crate, guns and barrels
 ];
 
 async function boot() {
@@ -93,7 +99,8 @@ async function boot() {
   /** Render and save the canvas as a PNG under the spike output folder (same task as the render). */
   const save = async name => { render(); const c = document.createElement('canvas'); c.width = W; c.height = H; c.getContext('2d').drawImage(canvas, 0, 0);
     const b = await new Promise(res => c.toBlob(res, 'image/png')); return (await fetch('/save/' + name, { method: 'POST', body: b })).status; };
-  window.VS = { renderer: r, scene, camera, U, halo, render, setHalo, save, gpuTimes, LOOKDEV_HALO };
+  const setView = i => { const v = VIEWS[i]; camera.fov = v.fov; camera.updateProjectionMatrix(); camera.position.set(...v.eye); camera.lookAt(new THREE.Vector3(...v.target)); camera.updateMatrixWorld(true); };
+  window.VS = { renderer: r, scene, camera, U, halo, render, setHalo, save, gpuTimes, LOOKDEV_HALO, setView, VIEWS };
   setHalo(params.has('halo'));
   $('info').textContent = `${PROPS.length} PSX models · ${r.backend.isWebGPUBackend ? 'WebGPU' : 'WebGL2'}`;
   window.VS_READY = true;
