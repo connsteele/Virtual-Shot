@@ -383,7 +383,8 @@ export class HaloCE {
       Pu.fw.array[i].set(...(L.weights || [1, 1, 1]), 0);
     });
     const Q = this.post.quads;
-    if (this.look.glow > 0) { mark('halo glow'); r.setRenderTarget(this.gA); Q.bright.render(r); r.setRenderTarget(this.gB); Q.blurX.render(r); r.setRenderTarget(this.gA); Q.blurY.render(r); }
+    if (this.look.glow > 0) { mark('halo glow bright'); r.setRenderTarget(this.gA); Q.bright.render(r); mark('halo glow blur x'); r.setRenderTarget(this.gB); Q.blurX.render(r);
+      mark('halo glow blur y'); r.setRenderTarget(this.gA); Q.blurY.render(r); }
     else { r.setRenderTarget(this.gA); r.clear(); }
     mark('halo glow + flares'); r.setRenderTarget(this.outRT); Q.combine.render(r);
     mark('halo copy'); r.setRenderTarget(F); Q.copy.render(r);

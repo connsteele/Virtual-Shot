@@ -606,6 +606,98 @@ load (three's `compileAsync` covers scene materials but not full-screen passes).
 - The default look is unchanged by all of this: frames 120/300/720/1100 are bit-identical to before the pixel look
   (PSNR infinite).
 
+## Spike: Halo CE look (branch `spike-halo-ce`)
+
+**What it is.** A self-contained look module, `src/render/looks/halo_ce.js` (about 380 lines), after Halo: Combat
+Evolved (2001 Xbox, 2003 PC). All of it is TSL; the default look's materials and passes are untouched.
+- **Base maps** re-filtered like a 2001 game (trilinear + 8× anisotropic, on clones), instead of the PSX pack's nearest texels.
+- **Detail map**: a 256 px tileable grain texture generated at load (value-noise octaves, speckle, scratches; mean 0.5),
+  double-multiplied over the base (base × detail × 2) under the detail mask. World-space triplanar at 6 tiles per metre
+  (the PSX atlases' uv density varies too much per model for Halo's uv-scaled detail); mipmaps fade it to flat grey with distance.
+- **Multipurpose map**, derived per texel from the base map: R reflection mask (bright, unsaturated texels: plastic and
+  metal), G self-illumination (the emissive map's luminance if the model has one, else very bright saturated texels),
+  B detail mask (not in dark crevices, less on shiny parts). Halo PC packs the same masks in another channel order.
+- **Cubemap reflections**: a generated 64 px "generic" environment cube (blue-grey sky, bright horizon band, sun, three
+  light panels), added under the reflection mask with no fresnel, the era's bright sheen. `reflect.lit` scales it by the
+  local light (0.75 in the shot, so dark corners don't shine; 0.3 in the lit lookdev). The CRT glass gets a faint copy.
+- **Lightmap feel**: the shot's light model (screen spill, fill, bounce, LED, ring light) evaluated at the 8 corners of a
+  5 cm world lattice and blended trilinearly, so it reads as a lightmap's texels (tight spots like the LED's spill smear
+  into soft pools; broad light is unchanged). Plus **colour bleed**: one virtual point light per placed object (up to 8),
+  baked on the CPU like a radiosity pass (sum of triangle area × albedo sampled from its base map × irradiance from the
+  screen and fill), re-gained every frame by the light levels, falling off as a disc of the same area (so at contact the
+  bleed equals the surface's radiosity). An object doesn't bleed onto itself. Re-baked when objects move (`syncFromDoc`).
+- **Fog**: Halo's atmospheric fog (linear from start to opaque distance, capped at a maximum density) and planar fog (by
+  the length of the view ray below a fog plane), in the materials; a sky shell at 0.9 × far draws the void in fog colour
+  (or the generic cube, fogged, in the lookdev) and writes a real distance, so haze and depth of field are unchanged.
+- **Glow**: materials write a glow mask into the scene colour's alpha (self-illumination, the LED texel, the ringing
+  remote's LEDs, the CRT = 1). After depth of field: bright pass of rgb × alpha above a 0.45 knee at quarter size,
+  13-tap blur each way, added back at 0.4.
+- **Lens flares**: sprite flares on the light sources (power LED, ringing LEDs, the CRT as a wide faint streak; the lamp in
+  the lookdev): a core, a 6-point star, a blue-white horizontal streak and three hexagon ghosts along the line through the
+  frame centre. Occlusion: 5 taps of the distance buffer against the light's distance. Projected through the lens
+  warp's inverse (fixed-point), so they sit on the warped picture.
+
+**How to turn it on.** Show menu › Style › Halo CE (off by default), with Fog, Glow and Lens flares under it. `?halo`
+on the editor or app page turns it on for that load (headless tests). Like the chunky-pixel look it is a renderer
+setting (`ShotRenderer.setHaloLook(look | null)`), so renders to disk follow the toggle; it works with chunky pixels
+too (`halo_ce\halo_plus_pixels\`). A lit lookdev page: `/src/lookdev/index.html` (`?halo`, `?view=0|1|2`, `?gputime`)
+loads seven PSX models from `/psx/` (desk, monitor, can, flashlight, barrel, vending machine, wall lamp) under the
+shot's light model, through the same colour + distance MRT.
+
+**Hooks in the renderer (minimal):** `bodyMeshes` (each body mesh with its `bodyMaterial` arguments and object id),
+`crtMesh`, `setHaloLook()`, `halo.preScene()` before the scene pass, `halo.postFrame()` after depth of field (it writes
+back into `finalRT`, so the composite, haze and pixel look are unchanged), and a re-bake flag in `syncFromDoc`. The
+module only needs a host with `{ renderer, U, scene, camera, sceneRT, finalRT, bodyMeshes, mark }`, which is how the
+lookdev page uses it.
+
+**Findings.**
+- **Default look unchanged:** frames 300, 420, 720, 1000 rendered with the look off are bit-identical to `spike` before
+  the change (0 differing pixels), and so are frames 300 and 720 after turning it on and off again (the materials swap back).
+- **Cost (headless Chrome, RTX 4090, behind the GPU lock, no other GPU job seen: 9–13% utilisation):** the scene pass goes
+  from 0.06–0.09 ms to 0.25–0.43 ms (8-tap lattice light, 8 bleed lights, triplanar detail, cube); glow is 0.016 ms
+  (bright + 2 blurs at quarter size), glow + flares combine 0.16 ms, copy back 0.007 ms. In all about **+0.4–0.5 ms a frame**,
+  at Play (5.2 → 5.7 ms) and Render quality alike; the haze march (3.5–3.9 ms Play, 105–136 ms Render) still dominates.
+  Lookdev: scene 0.04 → 0.15 ms. Numbers in `halo_ce\timing_shot.json`, `timing_lookdev.json`.
+- **In the Black Page shot the look is mild**: it is lit by the screen alone and mostly in the dark, haze and depth of
+  field, so what shows is the fog lifting the void to a dark blue-grey, the LED's flare and streak, the screen text's glow,
+  grain on the monitor's plastic and the bezel's sheen. **In the lit lookdev it reads as Halo**: bright fogged sky,
+  grimy detail-mapped props with a cubemap sheen, soft bleed, a flare on the lamp.
+- **Tuning lessons:** low-frequency octaves in the detail map read as leopard spots, not grain (keep it to 16–128 cells a
+  tile); a cube reflection on a big grey floor turns it into a mirror (mask threshold 0.35–0.85 luminance, strength 0.35);
+  colour bleed needs the disc-of-equal-area softening or a big floor floods everything (it measured about 4× too bright
+  with a fixed 0.35 √area radius); glow over a bright emissive screen washes out its detail, so emissive texels glow at 0.35.
+
+**three.js / TSL gotchas.**
+- A material's `mrtNode` replaces its *whole output* when the renderer has no MRT set (NodeMaterial.setupOutput): the
+  CRT and glow materials would draw their distance as colour into, say, a CubeCamera. That ruled out capturing a scene
+  cube for reflections and bleed without swapping materials per capture; the bleed is baked on the CPU instead.
+- A custom `outputNode`'s alpha goes straight to the render target, even for opaque materials (the opaque alpha = 1 only
+  applies to the default output), so alpha is a free channel for the glow mask. MSAA resolve, the lens pass and depth of
+  field all carry it.
+- `cubeTexture(tex, dir)` flips x for non-render-target cubes; a procedural cube built from canvases in the standard face
+  order (px, nx, py, ny, pz, nz) just works with `reflect(viewDir, normal)`.
+- GPU timing: several render calls under one `mark()` share one timestamp key, so only one of them is reported; mark
+  each pass.
+- Timing in the editor: `setShow()` requests a render and starts the idle refine, whose haze bands then land in the
+  timings; set `E.setRefine('off')` first.
+
+**Frames.** `G:\Claude\Virtual Legacy\Channel\Virtual Shot spike\halo_ce\`: `compare_shot.jpg` (frames 300, 420, 720, 1000,
+default | Halo CE), `compare_lookdev.jpg` (three views), `shot_default\` and `shot_halo\` (full frames), `lookdev\`
+(view0–2, default and halo), `freeview\` (free view lit for editing, f720), `halo_plus_pixels\` (with chunky pixels,
+3840×2160). `v1`–`v3` and `scratch\` are iterations; `baseline_spike`, `off_after`, `onoff_check` are the identity checks.
+
+**What's next.** Fog and flare settings per shot in the scene document; a real lightmap bake (texel-space, with
+shadows, which the lattice can't give); bump-mapped cube reflections (Halo's bump maps, derived from base-map
+luminance like the multipurpose map); Halo's "color change" (team colours) as a per-object tint; shader transparency
+(glass, plasma); a scene-captured cube once the MRT-node problem has a clean answer (an MRT-free capture material per
+mesh, or a one-attachment MRT for the capture).
+
+**As a named look preset.** `look.style: "halo-ce"` in the scene JSON would map to `setHaloLook({ ...HALO_LOOK,
+...look.haloCe })`, with per-shot overrides (`fog`, `reflect`, `lightmap.cell`, `glow`, `flares`, `sky`). The module
+already takes its settings as one object and its host as an interface, so the preset loader only needs to pick the
+module by name and pass the scene's light sources for flares (today `shotFlares(st, ix)` knows the Black Page lights; a
+preset system would read them from the document's lights).
+
 ## Running the spike
 
 ```
@@ -636,6 +728,7 @@ tools at it. In the page: `await VS.exportFrames([...frames], '<run>')` writes P
 | `src/layers/pops2d.js` | The pops as a 2D layer |
 | `src/app.js`, `src/index.html` | Viewer: scrub, play, export hooks |
 | `src/editor/` | The editor: outliner, inspector, viewport, timeline and graph editor |
+| `src/render/looks/halo_ce.js`, `src/lookdev/` | The Halo CE look (off by default) and a lit look-dev page for looks |
 | `src/core/commands.js` | Named commands on the scene document, with undo |
 | `src/artifact.html` | The artifact page |
 | `server/serve.mjs` | Local server: read-only mounts of the Black Page folder, the PSX pack and the Wii Remote; PNG writes to G: |
