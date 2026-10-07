@@ -3,6 +3,7 @@
 //   GET  /bp/...         Black Page Studio folder, read-only (reference engine, fonts, textures, reference frames)
 //   GET  /psx/...        PSX Mega Pack GLB folder on E:, read-only, read in place
 //   GET  /wii/...        Astra's Wii Remote folder, read-only
+//   GET  /chars/...      test characters on G: (three.js example models; licences in LEARNINGS §9), read-only
 //   POST /save/<path>    writes the request body under the spike output folder on G: (retries are the client's job)
 //   POST /save-rgba/<path>?w=&h=   raw RGBA8 pixels (top row first), encoded to PNG here
 //   POST /save-idat/<path>?w=&h=   an already filtered + zlib-compressed RGBA8 PNG image stream (the page compresses it
@@ -19,6 +20,7 @@ const MOUNTS = {
   '/bp/': 'G:/Claude/Virtual Legacy/Videos/Calling (Wii)/Thumbnails & Graphics/Black Page Studio',
   '/psx/': 'E:/Assets/Asset Packs/PSX Humble Bundle/PSX Mega Pack 3.1.3/Models/GLB (recommended)',
   '/wii/': 'G:/GPT/Projectless/2026-10-04/gen/outputs/Wii_Remote_LowPoly',
+  '/chars/': 'G:/Claude/Virtual Legacy/Channel/Virtual Shot spike/assets/characters',   // test characters (three.js examples), not in git
   '/bp-final-ref/': 'G:/Claude/Virtual Legacy/Channel/Virtual Shot spike/ref_final',   // the final master, decoded to PNG
 };
 const OUT = process.env.VS_OUT || 'G:/Claude/Virtual Legacy/Channel/Virtual Shot spike';

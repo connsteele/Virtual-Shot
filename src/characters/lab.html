@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Character Lab</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&display=swap">
+<script type="importmap">
+{ "imports": {
+  "three": "/node_modules/three/build/three.webgpu.js",
+  "three/webgpu": "/node_modules/three/build/three.webgpu.js",
+  "three/tsl": "/node_modules/three/build/three.tsl.js",
+  "three/addons/": "/node_modules/three/examples/jsm/"
+} }
+</script>
+<link rel="stylesheet" href="./lab.css">
+</head>
+<body>
+<div id="app">
+  <header class="topbar">
+    <div class="brand"><b>Virtual Shot</b><span class="muted">Characters</span></div>
+    <div class="tools">
+      <button type="button" id="play" title="Play / pause (Space)">Play</button>
+      <span id="time" class="mono">0.00 s</span>
+      <button type="button" id="pose" aria-pressed="false" title="Pose mode: click a joint, rotate it, keys at the playhead (Tab)">Pose mode</button>
+      <button type="button" id="undo" title="Undo (Ctrl+Z)">Undo</button>
+      <button type="button" id="redo" title="Redo (Ctrl+Shift+Z)">Redo</button>
+      <button type="button" id="save" class="primary" title="Save the scene (Ctrl+S)">Save</button>
+    </div>
+  </header>
+  <main id="viewport" aria-label="Viewport"><canvas id="gpu"></canvas><div id="vpMsg" class="vp-msg"></div></main>
+  <aside id="inspector" class="panel" aria-label="Inspector"><div class="panel-head">Inspector</div><div class="panel-body" id="insp"></div></aside>
+  <section id="timeline" class="panel" aria-label="Timeline">
+    <div class="tl-head"><span>Sequencer</span><span class="muted">drag a block to slide · edges to trim · top corners to blend · double-click empty row to add the selected clip</span></div>
+    <div class="tl-body" id="tl"></div>
+  </section>
+</div>
+<script type="module" src="./lab.js"></script>
+</body>
+</html>

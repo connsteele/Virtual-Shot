@@ -1,0 +1,37 @@
+:root { --bg: #161517; --panel: #1f1e21; --line: #34323a; --text: #e4e2e6; --muted: #8d8a93; --accent: #3fb5a8; --clip: #3b5f8f; --clip2: #6a4f8f; --sel: #ecefeb; }
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 13px/1.35 Barlow, system-ui, sans-serif; }
+#app { display: grid; height: 100vh; grid-template: "top top" 40px "vp insp" 1fr "tl tl" 230px / 1fr 300px; }
+.topbar { grid-area: top; display: flex; align-items: center; justify-content: space-between; padding: 0 12px; border-bottom: 1px solid var(--line); background: var(--panel); }
+.brand b { margin-right: 8px; } .muted { color: var(--muted); } .mono { font-variant-numeric: tabular-nums; min-width: 64px; display: inline-block; }
+.tools { display: flex; gap: 6px; align-items: center; }
+button { background: #2b2a2f; color: var(--text); border: 1px solid var(--line); border-radius: 4px; padding: 4px 10px; font: inherit; cursor: pointer; }
+button:hover { border-color: #55525c; } button[aria-pressed="true"], button.primary { background: var(--accent); color: #0d1716; border-color: var(--accent); }
+#viewport { grid-area: vp; position: relative; overflow: hidden; } #gpu { width: 100%; height: 100%; display: block; }
+.vp-msg { position: absolute; left: 10px; top: 8px; color: var(--muted); pointer-events: none; }
+.panel { background: var(--panel); border-left: 1px solid var(--line); overflow: auto; }
+.panel-head, .tl-head { padding: 6px 10px; border-bottom: 1px solid var(--line); font-weight: 600; display: flex; gap: 12px; }
+.tl-head .muted { font-weight: 400; }
+.panel-body { padding: 8px 10px; } .panel-body h4 { margin: 10px 0 4px; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.row { display: grid; grid-template-columns: 90px 1fr; gap: 6px; align-items: center; margin: 3px 0; }
+.row input, .row select { background: #141316; color: var(--text); border: 1px solid var(--line); border-radius: 3px; padding: 2px 4px; font: inherit; width: 100%; }
+.row input[type=checkbox] { width: auto; }
+#timeline { grid-area: tl; border-left: 0; border-top: 1px solid var(--line); display: flex; flex-direction: column; }
+.tl-body { position: relative; flex: 1; overflow: auto; user-select: none; }
+.tl-ruler { position: sticky; top: 0; height: 22px; background: #19181b; border-bottom: 1px solid var(--line); margin-left: 120px; z-index: 3; cursor: ew-resize; }
+.tl-tick { position: absolute; top: 0; height: 100%; border-left: 1px solid var(--line); font-size: 11px; color: var(--muted); padding-left: 3px; }
+.tl-row { position: relative; height: 34px; border-bottom: 1px solid #262529; }
+.tl-label { position: absolute; left: 0; top: 0; width: 120px; height: 100%; padding: 8px; border-right: 1px solid var(--line); background: var(--panel); z-index: 2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tl-lane { position: absolute; left: 120px; right: 0; top: 0; bottom: 0; }
+.tl-row.sel .tl-label { color: var(--accent); }
+.blk { position: absolute; top: 4px; height: 26px; background: var(--clip); border: 1px solid #5f84b5; border-radius: 3px; overflow: hidden; cursor: grab; font-size: 11px; padding: 6px 7px; white-space: nowrap; }
+.blk.retarget { background: var(--clip2); border-color: #9277b8; }
+.blk.sel { outline: 2px solid var(--sel); z-index: 1; }
+.blk .edge { position: absolute; top: 0; bottom: 0; width: 6px; cursor: ew-resize; } .blk .edge.l { left: 0; } .blk .edge.r { right: 0; }
+.blk .ramp { position: absolute; top: 0; bottom: 0; pointer-events: none; }
+.blk .ramp.in { left: 0; background: linear-gradient(to right, rgba(0,0,0,.45), transparent); }
+.blk .ramp.out { right: 0; background: linear-gradient(to left, rgba(0,0,0,.45), transparent); }
+.blk .bh { position: absolute; top: 0; width: 9px; height: 9px; background: var(--sel); cursor: ew-resize; clip-path: polygon(0 0, 100% 0, 0 100%); }
+.blk .bh.out { clip-path: polygon(0 0, 100% 0, 100% 100%); }
+.tl-playhead { position: absolute; top: 0; bottom: 0; width: 0; border-left: 1px solid #e25b4b; z-index: 4; pointer-events: none; }
+.tl-key { position: absolute; top: 12px; width: 9px; height: 9px; background: #e4c05b; transform: rotate(45deg); margin-left: -4px; }

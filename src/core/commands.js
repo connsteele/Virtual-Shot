@@ -84,4 +84,6 @@ export function createCommandStack(getDoc, onChange) {
   };
   return api;
 }
+/** Add commands from another module (characters ...) so they share the one undo stack and VS.cmd. */
+export function registerCommands(more) { Object.assign(COMMANDS, more); }
 export { getPath, findTrack };
