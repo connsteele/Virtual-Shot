@@ -161,7 +161,9 @@ export function haloBodyMaterial(U, H, tex, { map = null, emissiveMap = null, le
       return vec3(fill).add(sc.mul(spill.add(bnc))).mul(bl).add(led).add(ring);
     };
     // lightmap feel: the light on a world lattice (a lightmap's texels), trilinear between the 8 corners
-    const g = P.div(H.cell), g0 = floor(g), f = fract(g), cs = H.cell;
+    // the lattice is offset half a cell along the normal, so a surface lying on a lattice plane (a floor at y = 0) does
+    // not flip between two layers of corners (that showed as bright cell-sized squares in the reflection's light factor)
+    const g = P.add(n.mul(H.cell.mul(0.5))).div(H.cell), g0 = floor(g), f = fract(g), cs = H.cell;
     const C = (i, j, k) => direct(g0.add(vec3(i, j, k)).mul(cs));
     const lx00 = mix(C(0, 0, 0), C(1, 0, 0), f.x), lx10 = mix(C(0, 1, 0), C(1, 1, 0), f.x), lx01 = mix(C(0, 0, 1), C(1, 0, 1), f.x), lx11 = mix(C(0, 1, 1), C(1, 1, 1), f.x);
     const grid = mix(mix(lx00, lx10, f.y), mix(lx01, lx11, f.y), f.z);
