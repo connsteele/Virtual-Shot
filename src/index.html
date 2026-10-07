@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Virtual Shot spike</title>
+<script type="importmap">
+{ "imports": {
+  "three": "/node_modules/three/build/three.webgpu.js",
+  "three/webgpu": "/node_modules/three/build/three.webgpu.js",
+  "three/tsl": "/node_modules/three/build/three.tsl.js",
+  "three/addons/": "/node_modules/three/examples/jsm/"
+} }
+</script>
+<style>
+  :root { --ink:#161516; --surface:#201F20; --line:#323032; --text:#ECEFEB; --muted:#A6A3A6; --accent:#C3ACC6; color-scheme: dark; }
+  body { margin:0; background:var(--ink); color:var(--text); font:15px/1.4 system-ui, sans-serif; }
+  .page { max-width:1400px; margin:0 auto; padding:16px; display:flex; flex-direction:column; gap:12px; }
+  .stage { position:relative; width:100%; aspect-ratio:16/9; background:#000; border:1px solid var(--line); border-radius:8px; overflow:hidden; }
+  .stage canvas, .stage img { position:absolute; inset:0; width:100%; height:100%; display:block; }
+  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  input[type=range] { flex:1 1 300px; accent-color:var(--accent); }
+  button { font:600 14px system-ui; color:var(--text); background:transparent; border:1px solid var(--muted); border-radius:3px; padding:6px 12px; cursor:pointer; }
+  .muted { color:var(--muted); font-variant-numeric:tabular-nums; }
+  #status { color:var(--accent); }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="row"><b>Virtual Shot spike</b><span class="muted" id="info">loading…</span></div>
+  <div class="stage" id="stage">
+    <canvas id="gpu" width="1920" height="1080"></canvas>
+    <canvas id="flat" width="1920" height="1080"></canvas>
+    <img id="ref" alt="" hidden>
+  </div>
+  <div class="row">
+    <button id="play" type="button">Play</button>
+    <input type="range" id="scrub" min="0" max="1175" step="1" value="0" aria-label="Frame">
+    <span class="muted" id="time">f 0 · 0.000 s</span>
+  </div>
+  <div class="row">
+    <label class="muted"><input type="checkbox" id="showRef"> Show Black Page reference frame</label>
+    <span id="status" role="status"></span>
+  </div>
+</div>
+<script type="module" src="./app.js"></script>
+</body>
+</html>

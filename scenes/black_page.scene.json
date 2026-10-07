@@ -1,0 +1,1167 @@
+{
+ "format": "virtual-shot/scene",
+ "version": 0,
+ "name": "Black Page cold open (parity rebuild)",
+ "source": "Imported from Black Page Studio final/opener_final.json + engine v4.8.1 placements (tools/import_blackpage.mjs)",
+ "units": "metres, Y up (glTF); times in seconds",
+ "fps": 60,
+ "duration": 19.6,
+ "cut": 19.6,
+ "output": {
+  "width": 1920,
+  "height": 1080
+ },
+ "assets": {
+  "monitor": "psx:Electronics & Misc/pc_monitor_mp_1.glb",
+  "desk": "psx:Furniture/tv_table_4.glb",
+  "keyboard": "psx:Electronics & Misc/pc_keyboard_mp_2.glb",
+  "pad": "psx:Electronics & Misc/mouse_pad_mp_1.glb",
+  "wii": "wii:Wii_Remote_LowPoly.glb",
+  "font": "bp:source/assets/fonts/ipagp-sub.woff",
+  "polaroid": "bp:source/assets/textures/polaroid.png",
+  "tape": "bp:source/assets/textures/tape.png",
+  "ghost_woman": "bp:source/assets/textures/ghosts/woman.png",
+  "ghost_girl": "bp:source/assets/textures/ghosts/girl.png",
+  "ghost_peek": "bp:source/assets/textures/ghosts/peek.png",
+  "ghost_child": "bp:source/assets/textures/ghosts/child.png"
+ },
+ "params": {
+  "chaos": 0
+ },
+ "objects": [
+  {
+   "id": "monitor",
+   "name": "CRT monitor",
+   "type": "model",
+   "asset": "monitor",
+   "transform": {
+    "position": [
+     0,
+     0,
+     0
+    ]
+   },
+   "material": "screenLit",
+   "screen": {
+    "primitive": {
+     "materialName": "screen",
+     "maxVertices": 8
+    },
+    "material": "crt",
+    "source": "chat"
+   }
+  },
+  {
+   "id": "desk",
+   "name": "Desk",
+   "type": "model",
+   "asset": "desk",
+   "transform": {
+    "position": [
+     5.66e-7,
+     -0.970000029,
+     0.131351769
+    ]
+   },
+   "material": "screenLit"
+  },
+  {
+   "id": "keyboard",
+   "name": "Keyboard",
+   "type": "model",
+   "asset": "keyboard",
+   "transform": {
+    "position": [
+     -0.049999554,
+     2.8e-8,
+     0.341920376
+    ]
+   },
+   "material": "screenLit"
+  },
+  {
+   "id": "pad",
+   "name": "Mouse pad",
+   "type": "model",
+   "asset": "pad",
+   "transform": {
+    "position": [
+     0.405000567,
+     0.001000022,
+     0.345122576
+    ]
+   },
+   "material": "screenLit"
+  },
+  {
+   "id": "wii",
+   "name": "Wii Remote",
+   "type": "model",
+   "asset": "wii",
+   "transform": {
+    "position": [
+     0.379999995,
+     0.022282494,
+     0.330000013
+    ],
+    "quaternion": [
+     0.102847442,
+     0.326190422,
+     0.282571026,
+     0.896200774
+    ]
+   },
+   "material": "screenLit",
+   "emission": 1.5,
+   "ledParts": "player.?\\d.?led",
+   "ring": {
+    "t": 9.8,
+    "color": "#FF2A1E",
+    "pattern": [
+     0.22,
+     0.12,
+     0.22,
+     0.5
+    ],
+    "intensity": 3,
+    "ember": 0.08,
+    "light": 1.4,
+    "radius": 0.1,
+    "glow": 1,
+    "rumble": 0.0018,
+    "rumbleRot": 1.5
+   }
+  },
+  {
+   "id": "glass",
+   "name": "CRT glass frame",
+   "type": "empty",
+   "transform": {
+    "position": [
+     4.95e-7,
+     0.308579602,
+     0.159927327
+    ],
+    "quaternion": [
+     -0.043644933,
+     0.000020305,
+     8.87e-7,
+     0.999047106
+    ]
+   },
+   "size": [
+    0.384001274,
+    0.304001472
+   ],
+   "note": "Origin at the glass centre; +X right, +Y up, +Z out of the screen. The camera rig, polaroid and lights are relative to it."
+  },
+  {
+   "id": "led",
+   "name": "Power LED",
+   "type": "led",
+   "position": [
+    0.173847168,
+    0.132097953,
+    0.181378648
+   ],
+   "normal": [
+    -6.23e-7,
+    0.08715538,
+    0.99619473
+   ],
+   "color": "#3FB5A8",
+   "intensity": 1,
+   "size": 1,
+   "texelRect": [
+    0.24140625,
+    0.08046875,
+    0.244921875,
+    0.0875
+   ],
+   "appliesTo": [
+    "monitor",
+    "desk",
+    "keyboard",
+    "pad",
+    "polaroid",
+    "tape"
+   ]
+  },
+  {
+   "id": "polaroid",
+   "name": "Polaroid",
+   "type": "card",
+   "texture": "polaroid",
+   "transform": {
+    "position": [
+     -0.23999932,
+     0.110247428,
+     0.184064675
+    ],
+    "quaternion": [
+     -0.043445947,
+     -0.00416297,
+     -0.095753539,
+     0.994447776
+    ],
+    "scale": [
+     0.096000319,
+     0.117000388,
+     1
+    ]
+   },
+   "brightness": 1.4
+  },
+  {
+   "id": "tape",
+   "name": "Tape",
+   "type": "card",
+   "texture": "tape",
+   "transform": {
+    "position": [
+     -0.228837145,
+     0.16748752,
+     0.179438882
+    ],
+    "quaternion": [
+     -0.04363864,
+     -0.000741407,
+     -0.017434889,
+     0.998894961
+    ],
+    "scale": [
+     0.028800096,
+     0.046080153,
+     1
+    ]
+   },
+   "brightness": 1.4
+  },
+  {
+   "id": "cam",
+   "name": "Shot camera",
+   "type": "camera",
+   "rig": {
+    "type": "glassHeadOn",
+    "frame": "glass",
+    "neck": 0.08,
+    "units": {
+     "dist": "glass widths",
+     "x": "glass widths",
+     "y": "glass widths",
+     "fov": "vertical degrees",
+     "yaw": "degrees",
+     "pitch": "degrees"
+    }
+   },
+   "clip": {
+    "near": 0.007680025,
+    "far": 23.040076463
+   }
+  }
+ ],
+ "tracks": [
+  {
+   "target": "cam",
+   "prop": "rig.dist",
+   "default": 3,
+   "interp": "geometric",
+   "keys": [
+    {
+     "t": 4.4,
+     "v": 1.25957,
+     "curve": "linear"
+    },
+    {
+     "t": 5.1,
+     "v": 1.25957,
+     "curve": "linear"
+    },
+    {
+     "t": 7.3,
+     "v": 3,
+     "curve": "smooth"
+    },
+    {
+     "t": 10,
+     "v": 2.61333,
+     "curve": "exp",
+     "ho": [
+      0.2,
+      -0.026711568457983656
+     ]
+    },
+    {
+     "t": 12,
+     "v": 2.575,
+     "curve": "bezier",
+     "hi": [
+      -0.8,
+      0.004
+     ],
+     "ho": [
+      0.2,
+      -0.001
+     ]
+    },
+    {
+     "t": 12.6,
+     "v": 2.522,
+     "curve": "bezier",
+     "hi": [
+      -0.2,
+      0.032789502575000413
+     ]
+    },
+    {
+     "t": 19.6,
+     "v": 1.6,
+     "curve": "exp"
+    }
+   ]
+  },
+  {
+   "target": "cam",
+   "prop": "rig.fov",
+   "default": 30,
+   "interp": "geometric",
+   "keys": [
+    {
+     "t": 4.4,
+     "v": 30,
+     "curve": "linear"
+    },
+    {
+     "t": 10,
+     "v": 30,
+     "curve": "linear"
+    },
+    {
+     "t": 10.35,
+     "v": 30,
+     "curve": "soft-back"
+    },
+    {
+     "t": 11.23333,
+     "v": 27.5,
+     "curve": "smooth"
+    },
+    {
+     "t": 12,
+     "v": 27.5,
+     "curve": "linear"
+    },
+    {
+     "t": 13.3,
+     "v": 30,
+     "curve": "settle"
+    }
+   ]
+  },
+  {
+   "target": "cam",
+   "prop": "rig.x",
+   "default": 0,
+   "keys": [
+    {
+     "t": 4.4,
+     "v": 0,
+     "curve": "linear"
+    }
+   ]
+  },
+  {
+   "target": "cam",
+   "prop": "rig.y",
+   "default": 0,
+   "keys": [
+    {
+     "t": 4.4,
+     "v": 0,
+     "curve": "linear"
+    },
+    {
+     "t": 5.1,
+     "v": 0,
+     "curve": "linear"
+    },
+    {
+     "t": 7.3,
+     "v": -0.22,
+     "curve": "smooth"
+    },
+    {
+     "t": 19.6,
+     "v": 0,
+     "curve": "linear"
+    }
+   ]
+  },
+  {
+   "target": "cam",
+   "prop": "rig.distort",
+   "default": 0,
+   "keys": [
+    {
+     "t": 4.4,
+     "v": 0,
+     "curve": "linear"
+    },
+    {
+     "t": 5.1,
+     "v": 0,
+     "curve": "linear"
+    },
+    {
+     "t": 7.3,
+     "v": 0.2,
+     "curve": "smooth"
+    },
+    {
+     "t": 19.6,
+     "v": 0.35,
+     "curve": "linear"
+    }
+   ]
+  },
+  {
+   "target": "cam",
+   "prop": "rig.yaw",
+   "default": 0,
+   "keys": [
+    {
+     "t": 4.4,
+     "v": 0,
+     "curve": "linear"
+    },
+    {
+     "t": 10,
+     "v": 0,
+     "curve": "linear",
+     "ho": [
+      0.11667,
+      24.7976
+     ]
+    },
+    {
+     "t": 10.35,
+     "v": 21.30374,
+     "curve": "bezier",
+     "hi": [
+      -0.14349,
+      0.57271
+     ],
+     "ho": [
+      0.19226,
+      -0.76736
+     ]
+    },
+    {
+     "t": 11.23333,
+     "v": 20.9,
+     "curve": "bezier",
+     "hi": [
+      -0.57687,
+      0
+     ]
+    },
+    {
+     "t": 12,
+     "v": 20.7,
+     "curve": "linear"
+    },
+    {
+     "t": 13.3,
+     "v": 0,
+     "curve": "settle"
+    }
+   ]
+  },
+  {
+   "target": "cam",
+   "prop": "rig.pitch",
+   "default": 0,
+   "keys": [
+    {
+     "t": 4.4,
+     "v": 0,
+     "curve": "linear"
+    },
+    {
+     "t": 10,
+     "v": 0,
+     "curve": "linear",
+     "ho": [
+      0.11667,
+      14.90358
+     ]
+    },
+    {
+     "t": 10.35,
+     "v": 12.80374,
+     "curve": "bezier",
+     "hi": [
+      -0.15797,
+      0.74938
+     ],
+     "ho": [
+      0.17514,
+      -0.83083
+     ]
+    },
+    {
+     "t": 11.23333,
+     "v": 12.2,
+     "curve": "bezier",
+     "hi": [
+      -0.57687,
+      0
+     ]
+    },
+    {
+     "t": 12,
+     "v": 12,
+     "curve": "linear"
+    },
+    {
+     "t": 13.3,
+     "v": 0,
+     "curve": "settle"
+    }
+   ]
+  },
+  {
+   "target": "cam",
+   "prop": "rig.squint",
+   "default": 0,
+   "keys": [
+    {
+     "t": 4.4,
+     "v": 0,
+     "curve": "linear"
+    },
+    {
+     "t": 10.35,
+     "v": 0,
+     "curve": "linear"
+    },
+    {
+     "t": 11.23333,
+     "v": 0.55,
+     "curve": "smooth"
+    },
+    {
+     "t": 12,
+     "v": 0.55,
+     "curve": "linear"
+    },
+    {
+     "t": 13.3,
+     "v": 0,
+     "curve": "settle"
+    }
+   ]
+  },
+  {
+   "target": "scene",
+   "prop": "params.chaos",
+   "default": 0,
+   "keys": [
+    {
+     "t": 0,
+     "v": 0,
+     "curve": "linear"
+    },
+    {
+     "t": 13.7,
+     "v": 0.03,
+     "curve": "linear"
+    },
+    {
+     "t": 15.7,
+     "v": 0.25,
+     "curve": "linear"
+    },
+    {
+     "t": 17.8,
+     "v": 0.6,
+     "curve": "linear"
+    },
+    {
+     "t": 19.59,
+     "v": 1,
+     "curve": "linear"
+    }
+   ]
+  },
+  {
+   "target": "cam",
+   "prop": "focus",
+   "type": "focus",
+   "settings": {
+    "max": 36,
+    "edgeStart": 0.3
+   },
+   "keys": [
+    {
+     "t": 4.4,
+     "v": {
+      "target": "glass",
+      "px": 60,
+      "band": 0.1,
+      "edge": 0
+     }
+    },
+    {
+     "t": 10,
+     "v": {
+      "target": "glass",
+      "px": 60,
+      "band": 0.1,
+      "edge": 0
+     }
+    },
+    {
+     "t": 10.35,
+     "v": {
+      "target": "wii",
+      "px": 200,
+      "band": 0.06,
+      "edge": 0,
+      "spot": 14,
+      "spotR": 0.16,
+      "spotF": 0.3
+     },
+     "curve": "soft-back"
+    },
+    {
+     "t": 10.8,
+     "v": {
+      "target": "wii",
+      "px": 320,
+      "band": 0.055,
+      "edge": 6,
+      "spot": 34,
+      "spotR": 0.15,
+      "spotF": 0.22
+     },
+     "curve": "ease-out"
+    },
+    {
+     "t": 12,
+     "v": {
+      "target": "wii",
+      "px": 320,
+      "band": 0.055,
+      "edge": 6,
+      "spot": 34,
+      "spotR": 0.15,
+      "spotF": 0.22
+     },
+     "curve": "linear"
+    },
+    {
+     "t": 12.55,
+     "v": {
+      "target": "glass",
+      "px": 150,
+      "band": 0.05,
+      "edge": 16
+     },
+     "curve": "smooth"
+    },
+    {
+     "t": 19.6,
+     "v": {
+      "target": "glass",
+      "px": 150,
+      "band": 0.05,
+      "edge": 18
+     },
+     "curve": "linear"
+    }
+   ]
+  }
+ ],
+ "events": {
+  "ghosts": [
+   {
+    "t": 7.6,
+    "img": "ghost_peek",
+    "x": 0.82,
+    "y": 0.3,
+    "h": 0.3,
+    "intensity": 0.22,
+    "dur": 0.22
+   },
+   {
+    "t": 11.3,
+    "img": "ghost_child",
+    "x": 0.18,
+    "y": 0.62,
+    "h": 0.45,
+    "intensity": 0.16,
+    "dur": 0.4
+   },
+   {
+    "t": 14.2,
+    "img": "ghost_girl",
+    "x": 0.64,
+    "y": 0.26,
+    "h": 0.52,
+    "intensity": 0.45,
+    "dur": 0.3
+   },
+   {
+    "t": 18.3,
+    "img": "ghost_woman",
+    "x": 0.42,
+    "y": 0.48,
+    "h": 0.8,
+    "intensity": 0.7,
+    "dur": 0.38
+   }
+  ]
+ },
+ "layers": [
+  {
+   "id": "chat",
+   "type": "chat2d",
+   "font": "font",
+   "fontFamily": "BP Gothic",
+   "script": {
+    "messages": [
+     {
+      "t": 1.4,
+      "system": "<Anonymous> has joined the room.",
+      "fy": 470,
+      "cps": 48
+     },
+     {
+      "t": 2.1,
+      "user": "Anonymous",
+      "text": "Have you seen the Black Page?",
+      "cps": 22,
+      "fy": 540
+     },
+     {
+      "t": 6.1,
+      "system": "<VirtualLegacy> has joined the room.",
+      "cps": 60
+     },
+     {
+      "t": 6.4,
+      "user": "VirtualLegacy",
+      "text": "from that wii game? the Calling?",
+      "cps": 34
+     },
+     {
+      "t": 8.8,
+      "user": "rin_k",
+      "text": "yes. the wiimote is the phone. it calls YOU",
+      "cps": 38,
+      "side": "pos"
+     },
+     {
+      "t": 10.1,
+      "user": "mana_r",
+      "text": "the game is pretty bad",
+      "cps": 40,
+      "side": "neg"
+     },
+     {
+      "t": 11.1,
+      "user": "ayeka_k",
+      "text": "This game is amazing.",
+      "cps": 44,
+      "side": "pos"
+     },
+     {
+      "t": 11.9,
+      "user": "tranq",
+      "text": "It isn't THAT bad.",
+      "cps": 48,
+      "side": "pos"
+     },
+     {
+      "t": 12.6,
+      "user": "IGNoramus",
+      "text": "3.5/10",
+      "cps": 52,
+      "side": "neg"
+     },
+     {
+      "t": 13.1,
+      "user": "shiva144",
+      "text": "just rent it and try it out",
+      "cps": 56,
+      "side": "neg"
+     },
+     {
+      "t": 13.5,
+      "user": "Anonymous",
+      "text": "have you seen the black page?",
+      "cps": 60
+     },
+     {
+      "t": 13.85,
+      "user": "reflectionz",
+      "text": "The game is actually pretty good",
+      "cps": 64,
+      "side": "pos"
+     },
+     {
+      "t": 14.2,
+      "user": "Cynamight",
+      "text": "80/100",
+      "cps": 68,
+      "side": "pos"
+     },
+     {
+      "t": 14.5,
+      "user": "tgw_plays",
+      "text": "This was an interesting short game",
+      "cps": 72,
+      "side": "neg"
+     },
+     {
+      "t": 14.8,
+      "user": "franco96",
+      "text": "Calling es un juego realmente aterrador",
+      "cps": 78,
+      "side": "pos"
+     },
+     {
+      "t": 15.1,
+      "user": "GameSpat",
+      "text": "3.5/10",
+      "cps": 84,
+      "side": "neg"
+     },
+     {
+      "t": 15.4,
+      "user": "ddr23",
+      "text": "Calling's not really that scary.",
+      "cps": 110,
+      "side": "neg"
+     },
+     {
+      "t": 15.66,
+      "user": "santi_18",
+      "text": "Es un buen juego, con buen ambiente",
+      "cps": 115,
+      "side": "pos"
+     },
+     {
+      "t": 15.89,
+      "user": "mana_r",
+      "text": "you can generally see the scares coming",
+      "cps": 120,
+      "side": "neg"
+     },
+     {
+      "t": 16.1,
+      "user": "thy_fox",
+      "text": "a fun game with a compelling story",
+      "cps": 125,
+      "side": "pos"
+     },
+     {
+      "t": 16.29,
+      "user": "tgw_plays",
+      "text": "short even when replayed",
+      "cps": 130,
+      "side": "neg"
+     },
+     {
+      "t": 16.46,
+      "user": "MultiSlayer",
+      "text": "75/100",
+      "cps": 135,
+      "side": "pos"
+     },
+     {
+      "t": 16.62,
+      "user": "mw",
+      "text": "gets on your nerves figuring out what to do",
+      "cps": 140,
+      "side": "neg"
+     },
+     {
+      "t": 16.76,
+      "user": "frys_bin",
+      "text": "Bought this game for $10 at Fry's",
+      "cps": 145,
+      "side": "pos"
+     },
+     {
+      "t": 16.88,
+      "user": "replay_dude",
+      "text": "The replay is no different?",
+      "cps": 150,
+      "side": "neg"
+     },
+     {
+      "t": 16.99,
+      "user": "thy_fox",
+      "text": "psychological terror",
+      "cps": 155,
+      "side": "pos"
+     },
+     {
+      "t": 17.09,
+      "user": "EdgeLord",
+      "text": "5/10",
+      "cps": 160,
+      "side": "neg"
+     },
+     {
+      "t": 17.18,
+      "user": "GamesMastr",
+      "text": "70/100",
+      "cps": 165,
+      "side": "pos"
+     },
+     {
+      "t": 17.27,
+      "user": "NPowerless",
+      "text": "5/10",
+      "cps": 170,
+      "side": "neg"
+     },
+     {
+      "t": 17.36,
+      "user": "Anonymous",
+      "text": "have you seen the black page?",
+      "cps": 140
+     },
+     {
+      "t": 17.45,
+      "user": "kow",
+      "text": "terrible gameplay and pointless searching",
+      "cps": 180,
+      "side": "neg"
+     },
+     {
+      "t": 17.54,
+      "user": "kp_lost",
+      "text": "missing passwords",
+      "cps": 185,
+      "side": "pos"
+     },
+     {
+      "t": 17.63,
+      "user": "shiva144",
+      "text": "It isn't as creepy",
+      "cps": 190,
+      "side": "neg"
+     },
+     {
+      "t": 17.72,
+      "user": "loltopaz",
+      "text": "Scary?",
+      "cps": 195,
+      "side": "pos"
+     },
+     {
+      "t": 17.81,
+      "user": "kow",
+      "text": "It's terrible, and nobody should like it",
+      "cps": 200,
+      "side": "neg"
+     },
+     {
+      "t": 17.9,
+      "user": "boo",
+      "text": "This is a good game to play for Halloween!!!",
+      "cps": 205,
+      "side": "pos"
+     },
+     {
+      "t": 17.99,
+      "user": "%?!#=~",
+      "text": "%?!#=~ > 00957",
+      "cps": 140
+     },
+     {
+      "t": 18.08,
+      "user": "Famitsoon",
+      "text": "28/40",
+      "cps": 215,
+      "side": "pos"
+     },
+     {
+      "t": 18.17,
+      "user": "jump_scared",
+      "text": "the pop up scares I didn't like",
+      "cps": 220,
+      "side": "neg"
+     },
+     {
+      "t": 18.26,
+      "user": "canuck",
+      "text": "a hand reached out through the phone",
+      "cps": 225,
+      "side": "pos"
+     },
+     {
+      "t": 18.35,
+      "user": "mana_r",
+      "text": "Is this game that bad?",
+      "cps": 230,
+      "side": "neg"
+     },
+     {
+      "t": 18.44,
+      "user": "what_is_it",
+      "text": "This game is a take on ?",
+      "cps": 235,
+      "side": "pos"
+     },
+     {
+      "t": 18.53,
+      "user": "Anonymous",
+      "text": "have you seen the black page?",
+      "cps": 140
+     },
+     {
+      "t": 18.62,
+      "user": "vilandas",
+      "text": "this is kinda exceptional",
+      "cps": 245,
+      "side": "pos"
+     },
+     {
+      "t": 18.71,
+      "user": "extern_x",
+      "text": "better rent the game",
+      "cps": 250,
+      "side": "neg"
+     },
+     {
+      "t": 18.8,
+      "user": "GameInformal",
+      "text": "4.5/10",
+      "cps": 255,
+      "side": "pos"
+     },
+     {
+      "t": 18.89,
+      "user": "Anonymous",
+      "text": "have you seen the black page?",
+      "cps": 140
+     },
+     {
+      "t": 18.98,
+      "user": "stuck_rn",
+      "text": "im beggin for help please",
+      "cps": 265,
+      "side": "pos"
+     },
+     {
+      "t": 19.07,
+      "user": "lil_rox",
+      "text": "I truly like this game",
+      "cps": 270,
+      "side": "neg"
+     },
+     {
+      "t": 19.16,
+      "user": "ayeka_k",
+      "text": "So anyone like this game ???",
+      "cps": 275,
+      "side": "pos"
+     },
+     {
+      "t": 19.25,
+      "user": "Anonymous",
+      "text": "have you seen the black page?",
+      "cps": 140
+     },
+     {
+      "t": 19.34,
+      "user": "night_owl",
+      "text": "Death by phone",
+      "cps": 285,
+      "side": "pos"
+     }
+    ],
+    "counter": {
+     "start": 0,
+     "end": 1,
+     "from": 957,
+     "tickEvery": 0.5,
+     "fadeIn": 0.25,
+     "fadeOut": 0.4
+    },
+    "reveal": {
+     "start": 4.4,
+     "duration": 1.8,
+     "dissolve": 0.6,
+     "slideDelay": 0.7,
+     "slide": 0.9
+    },
+    "window": {
+     "start": 4.4
+    },
+    "mode": "auto"
+   },
+   "chaos": "scene.params.chaos"
+  }
+ ],
+ "sequence": {
+  "reveal": {
+   "start": 4.4,
+   "duration": 1.8,
+   "dissolve": 0.6
+  },
+  "composite": [
+   {
+    "layer": "flat",
+    "from": "chat",
+    "until": "reveal.start + reveal.dissolve"
+   },
+   {
+    "layer": "3d",
+    "from": "reveal.start"
+   }
+  ]
+ },
+ "look": {
+  "lighting": {
+   "ambient": 0,
+   "screen": 4.5,
+   "bounce": 0.6,
+   "bounceDist": 0.75,
+   "glow": {
+    "base": [
+     0.95,
+     0.46,
+     0.42
+    ],
+    "chaosGain": [
+     0.55,
+     0.5
+    ],
+    "floor": [
+     0.05,
+     0.07,
+     0.08
+    ]
+   }
+  },
+  "screen": {
+   "curvature": 0.08,
+   "overscan": 1.05,
+   "crop": [
+    120,
+    1800
+   ],
+   "scanFreq": 900
+  },
+  "lens": {
+   "distortScale": 0.3,
+   "fringe": 0.03
+  }
+ }
+}

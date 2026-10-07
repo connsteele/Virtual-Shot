@@ -1,0 +1,6 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    { "name": "virtual-shot-spike", "runtimeExecutable": "node", "runtimeArgs": ["server/serve.mjs", "8790"], "port": 8790 }
+  ]
+}

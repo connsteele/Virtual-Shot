@@ -1,0 +1,13 @@
+{
+  "name": "virtual-shot-spike",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Throwaway spike: Black Page cold open rebuilt on a scene document + time core + three.js",
+  "type": "module",
+  "scripts": {
+    "serve": "node server/serve.mjs"
+  },
+  "dependencies": {
+    "three": "0.186.1"
+  }
+}
