@@ -543,6 +543,13 @@ measure. For the architecture: state the supported browser, and treat Canvas 2D 
 change rarely. A layer that animates every frame should be drawn on the GPU (glyph atlas or SDF text), which would also
 make Firefox usable.
 
+**In Chrome, Connor's playback capture** (22 s, 2,144 frames) showed CPU at 1.4 ms a frame (mean) and GPU at 5 ms
+(7.5–9 ms once the haze is on: haze march 5–6.5 ms, depth of field 2 ms, everything else under 0.1 ms), with 50 of
+2,974 shot frames dropped. Playback was drawing at his monitor's refresh rate (about 6.4 ms between frames, 120 Hz or
+more) although the shot is 60 fps, so it drew most frames two or three times. It now draws only when the shot frame
+changes, which cuts playback GPU load by more than half on a high-refresh monitor. Lesson for the doc: the player
+should be clocked by the shot's frame rate, not the display's.
+
 ## Running the spike
 
 ```

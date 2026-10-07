@@ -139,7 +139,8 @@ async function boot() {
   let t0 = 0, f0 = 0;
   const loop = now => { if (!E.playing) return; const f = f0 + Math.floor((now - t0) / 1000 * E.fps);
     if (f > E.last) { E.playing = false; $('playBtn').textContent = 'Play'; E.frame = E.last; E.requestRender(); return; }
-    perf.playTick(f, E.frame); E.frame = f; E.renderNow('play'); requestAnimationFrame(loop); };
+    // a 120-165 Hz monitor asks for 2-3 animation frames per shot frame: draw only when the shot frame changes
+    if (f !== E.frame) { perf.playTick(f, E.frame); E.frame = f; E.renderNow('play'); } requestAnimationFrame(loop); };
   E.togglePlay = () => { perf.note(E.playing ? 'pause' : 'play'); if (E.playing) { E.playing = false; $('playBtn').textContent = 'Play'; E.requestRender(); return; }
     if (E.frame >= E.last) E.frame = 0; E.playing = true; t0 = performance.now(); f0 = E.frame; $('playBtn').textContent = 'Pause'; requestAnimationFrame(loop); };
   const keyTimes = () => [...new Set(E.doc.tracks.flatMap(tr => tr.keys.map(k => Math.round(k.t * E.fps))))].sort((a, b) => a - b);
