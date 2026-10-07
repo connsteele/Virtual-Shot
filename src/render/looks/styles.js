@@ -13,6 +13,10 @@ export const BUILTIN_STYLES = {
   'wii-bloom': { label: 'Wii (chunky + bloom)', pixel: { lines: 480, bits: 6, msaa: false, sharpScreen: 1080, bloom: 0.5 }, materials: 'default' },
   ps1: { label: 'PS1 (240, 15-bit, wobble)', pixel: { lines: 240, bits: 5, msaa: false, sharpScreen: 480 }, materials: 'ps1',
     ps1: { snap: 1, affine: 1, gouraud: 1 } },
+  // research pass variants: closer to the real hardware
+  'wii-480i': { label: 'Wii, authentic (640×480 anamorphic, deflicker)', pixel: { lines: 480, width: 640, bits: 6, msaa: false, sharpScreen: 1080, bloom: 0.5, deflicker: 1 }, materials: 'default' },
+  'ps1-authentic': { label: 'PS1, authentic (320×240, no sharp text, fog)', pixel: { lines: 240, width: 320, bits: 5, msaa: false, sharpScreen: 0 }, materials: 'ps1',
+    ps1: { snap: 1, affine: 1, gouraud: 1, fog: [0.6, 3.0] } },
 };
 
 const isObj = v => v && typeof v === 'object' && !Array.isArray(v);

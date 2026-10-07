@@ -6,10 +6,11 @@
 // Colour depth (15-bit with the 4x4 ordered dither) and the low internal resolution come from the chunky-pixel pass.
 import * as THREE from 'three/webgpu';
 import { Fn, uniform, texture, uv, vec2, vec3, vec4, float, mix, clamp, max, min, dot, normalize, length, exp, round, If, Discard,
-  positionWorld, positionLocal, normalWorldGeometry, modelViewMatrix, cameraProjectionMatrix, varying } from 'three/tsl';
+  positionWorld, positionLocal, normalWorldGeometry, modelViewMatrix, cameraProjectionMatrix, varying, select, cameraPosition } from 'three/tsl';
 
 /** Uniforms shared by every PS1 surface; res is the scene buffer's size in pixels (set per frame). */
-export const makePs1Uniforms = () => ({ res: uniform(new THREE.Vector2(854, 480)), snap: uniform(1), affine: uniform(1), gouraud: uniform(1) });
+export const makePs1Uniforms = () => ({ res: uniform(new THREE.Vector2(854, 480)), snap: uniform(1), affine: uniform(1), gouraud: uniform(1),
+  fog: uniform(new THREE.Vector2(0, 0)) });   // depth cue: fade to black from fog.x to fog.y metres (0, 0 = off), per vertex like the GTE
 
 /** The light reaching a surface point (multiplies the texture colour), as in bodyMaterial without banding. */
 function lightK(U, n, P, { scMul, blMul, rawLed }) {
@@ -42,7 +43,8 @@ export function ps1Material(U, P, { map = null, emissiveMap = null, ledRect = [2
     const v = mix(uv(), uvw.xy.div(uvw.z), P.affine).toVar();
     const c = map ? texture(map, v) : vec4(0.6);
     If(c.a.lessThan(0.4), () => { Discard(); });
-    const K = mix(lightK(U, normalWorldGeometry, positionWorld, opt), kVert, P.gouraud);
+    const fd = positionWorld.distance(cameraPosition), fogK = select(P.fog.y.greaterThan(0), float(1).sub(clamp(fd.sub(P.fog.x).div(max(P.fog.y.sub(P.fog.x), 1e-4)), 0, 1)), float(1));
+    const K = mix(lightK(U, normalWorldGeometry, positionWorld, opt), kVert, P.gouraud).mul(fogK);
     const col = c.rgb.mul(K).toVar();
     const inRect = v.x.greaterThan(lr.x).and(v.x.lessThan(lr.z)).and(v.y.greaterThan(lr.y)).and(v.y.lessThan(lr.w));
     If(inRect, () => { col.assign(mix(col, U.lc.mul(1.15).add(0.12), min(U.li, 1).mul(0.9))); });

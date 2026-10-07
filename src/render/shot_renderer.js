@@ -50,14 +50,15 @@ export class ShotRenderer {
   setPixelLook(look) {
     const { doc } = this, aspect = doc.output.width / doc.output.height;
     const [ow, oh] = look ? look.output : [doc.output.width, doc.output.height];
-    const h = look ? look.lines : oh, w = look ? Math.round(h * aspect / 2) * 2 : ow;   // 480 lines at 16:9 -> 854 x 480
+    // 480 lines at 16:9 -> 854 x 480; look.width: an anamorphic buffer (the Wii's 640 x 480 stretched to 16:9)
+    const h = look ? look.lines : oh, w = look ? (look.width || Math.round(h * aspect / 2) * 2) : ow;
     this.pixel = look ? { ...PIXEL_LOOK, ...look, lines: h, output: [ow, oh] } : null;
     this.W = w; this.H = h; this.OW = ow; this.OH = oh;
     for (const t of [this.lensRT, this.cocRT, this.finalRT, this.pixelRT]) t.setSize(w, h);
     const bw = Math.ceil(w / 4), bh = Math.ceil(h / 4); this.bloomA.setSize(bw, bh); this.bloomB.setSize(bw, bh);
     this.bloom.U.srcPx.value.set(1 / w, 1 / h); this.bloom.U.px.value.set(1 / bw, 1 / bh);
     const P = this.pixel, UU = this.upscale.U;
-    UU.src.value.set(w, h); UU.dst.value.set(ow, oh); UU.levels.value = P && P.bits ? 2 ** P.bits - 1 : 0; UU.detail.value = P && P.sharpScreen ? 1 : 0; UU.scrLines.value = P && typeof P.sharpScreen === 'number' ? P.sharpScreen : 0;
+    UU.src.value.set(w, h); UU.dst.value.set(ow, oh); UU.deflicker.value = P ? P.deflicker || 0 : 0; UU.levels.value = P && P.bits ? 2 ** P.bits - 1 : 0; UU.detail.value = P && P.sharpScreen ? 1 : 0; UU.scrLines.value = P && typeof P.sharpScreen === 'number' ? P.sharpScreen : 0;
     this.sceneRT.samples = P && !P.msaa ? 0 : 4;
     this.screenFlag.value = P ? 1 : 0; this.U.bands.value = P ? P.bands || 0 : 0; UU.bloom.value = P ? P.bloom || 0 : 0;
     if (!P || !P.stable) UU.off.value.set(0, 0);
@@ -68,12 +69,17 @@ export class ShotRenderer {
     this.renderer.setSize(ow, oh, false);
   }
 
+  /** The camera's aspect ratio: the buffer's, or the output's for an anamorphic buffer (pixel look with a width). The
+   *  854 x 480 buffer is 0.08% wider than 16:9; kept, so the chunky looks render as before. */
+  get aspect() { return this.pixel?.width ? this.OW / this.OH : this.W / this.H; }
+
   /** Apply a resolved look style (looks/styles.js resolveStyle): the chunky-pixel settings and the material set. */
   setStyle(style) {
     const pixel = style.pixel ? { ...PIXEL_LOOK, ...style.pixel } : null, key = JSON.stringify(pixel);
     if (key !== this.pixelKey) { this.setPixelLook(pixel); this.pixelKey = key; }
     this.setMaterialSet(style.materials || 'default');
-    if (this.ps1U && style.ps1) for (const k of ['snap', 'affine', 'gouraud']) this.ps1U[k].value = style.ps1[k] ?? 1;
+    if (this.ps1U && style.ps1) { for (const k of ['snap', 'affine', 'gouraud']) this.ps1U[k].value = style.ps1[k] ?? 1;
+      this.ps1U.fog.value.set(...(style.ps1.fog || [0, 0])); }
     this.style = style;
   }
   /** Switch every lit surface (models and cards, not the CRT or glows) to a material set; built on first use. */
@@ -98,7 +104,7 @@ export class ShotRenderer {
 
     const scene = this.scene = new THREE.Scene();
     const U = this.U = makeLightUniforms();
-    this.camera = new THREE.PerspectiveCamera(30, this.W / this.H, 0.01, 100);
+    this.camera = new THREE.PerspectiveCamera(30, this.aspect, 0.01, 100);
     this.geo = { centres: {}, wii: null };
 
     // chat texture: the 2D layer drawn into the tall canvas each frame
@@ -274,13 +280,13 @@ export class ShotRenderer {
     const C = this.comp.U, c = st.camera;
     C.before.value = st.flat.before ? 1 : 0; C.overlay.value = st.flat.overlay; C.gain.value = st.haze ? st.haze.gain : 0;
     C.hazeOn.value = hazeOn ? 1 : 0; C.popsOn.value = final && opts.pops && show.pops ? 1 : 0;
-    C.k.value = c.k; C.sq.value = c.squint; C.aspect.value = this.W / this.H;
+    C.k.value = c.k; C.sq.value = c.squint; C.aspect.value = this.aspect;
     C.blur.value = this.quality === 'play' ? 1.0 / this.hazeRT.width : 0;
     this.mark('composite'); r.setRenderTarget(pixel ? this.pixelRT : null); this.comp.quad.render(r);
     if (pixel) {
       const c = cTrue, B = this.bloom, UU = this.upscale.U, f = nrm(c.target.map((v, i) => v - c.eye[i])), rr = nrm([f[1] * c.up[2] - f[2] * c.up[1], f[2] * c.up[0] - f[0] * c.up[2], f[0] * c.up[1] - f[1] * c.up[0]]);
       UU.eye.value.set(...c.eye); UU.cf.value.set(...f); UU.cr.value.set(...rr); UU.cu.value.set(rr[1] * f[2] - rr[2] * f[1], rr[2] * f[0] - rr[0] * f[2], rr[0] * f[1] - rr[1] * f[0]);
-      UU.tanY.value = Math.tan(c.fovRender * Math.PI / 360); UU.aspect.value = this.W / this.H; UU.k.value = c.k;
+      UU.tanY.value = Math.tan(c.fovRender * Math.PI / 360); UU.aspect.value = this.aspect; UU.k.value = c.k;
       UU.popsOn.value = C.popsOn.value; UU.detail.value = this.pixel.sharpScreen && !st.flat.before ? 1 - st.flat.overlay : 0;
       if (UU.bloom.value > 0) { this.mark('bloom'); r.setRenderTarget(this.bloomA); B.quads.bright.render(r); r.setRenderTarget(this.bloomB); B.quads.blurX.render(r); r.setRenderTarget(this.bloomA); B.quads.blurY.render(r); }
       this.mark('area upscale'); r.setRenderTarget(null); this.upscale.quad.render(r);
@@ -311,7 +317,7 @@ export class ShotRenderer {
     const f = nrm(c.target.map((v, i) => v - c.eye[i])), rr = nrm([f[1] * c.up[2] - f[2] * c.up[1], f[2] * c.up[0] - f[0] * c.up[2], f[0] * c.up[1] - f[1] * c.up[0]]);
     const uu = [rr[1] * f[2] - rr[2] * f[1], rr[2] * f[0] - rr[0] * f[2], rr[0] * f[1] - rr[1] * f[0]];
     H.eye.value.set(...c.eye); H.cf.value.set(...f); H.cr.value.set(...rr); H.cu.value.set(...uu);
-    H.tanY.value = Math.tan(c.fovRender * Math.PI / 360); H.aspect.value = this.W / this.H; H.t.value = st.t; H.frame.value = st.frame;
+    H.tanY.value = Math.tan(c.fovRender * Math.PI / 360); H.aspect.value = this.aspect; H.t.value = st.t; H.frame.value = st.frame;
     H.g00.value.set(...gm.p00); H.geu.value.set(...gm.eu); H.gev.value.set(...gm.ev); H.gn.value.set(...this.ix.glass.n);
     const lin = x => x <= 0.04045 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4), I4 = 1 / (4 * Math.PI);
     const ringW = R ? (HZ.ringW ?? 0.06) * (R.ember + R.lvl * R.I) : 0;
@@ -327,7 +333,7 @@ export class ShotRenderer {
   /** Mean luminance of this frame's lens-warped, ungained haze (call after render()). */
   async hazeLevel(st) {
     const r = this.renderer, M = this.meter.U, c = st.camera;
-    M.k.value = c.k; M.sq.value = c.squint; M.aspect.value = this.W / this.H;
+    M.k.value = c.k; M.sq.value = c.squint; M.aspect.value = this.aspect;
     r.setRenderTarget(this.meterRT); this.meter.quad.render(r); r.setRenderTarget(null);
     const px = await r.readRenderTargetPixelsAsync(this.meterRT, 0, 0, 480, 270);
     let s = 0; for (let i = 0; i < 480 * 270; i++) s += px[i * 4];
@@ -338,7 +344,7 @@ export class ShotRenderer {
     const { renderer: r, U, ix, post } = this, g = ix.glass, W_ = g.W, c = st.camera;
     if (upload.chat !== false) this.chatTex.needsUpdate = true;   // a 1920x1330 copy: only when the chat was redrawn
     // camera
-    const cam = this.camera; cam.fov = c.fovRender; cam.near = c.near; cam.far = c.far; cam.aspect = this.W / this.H;
+    const cam = this.camera; cam.fov = c.fovRender; cam.near = c.near; cam.far = c.far; cam.aspect = this.aspect;
     cam.position.set(...c.eye); cam.up.set(...c.up); cam.lookAt(v3(c.target)); cam.updateProjectionMatrix(); cam.updateMatrixWorld(true);
     // lights and look
     const rk = st.revealK, L = st.lighting;
@@ -373,7 +379,7 @@ export class ShotRenderer {
     this.mark('scene'); r.setMRT(this.sceneMRT); r.setRenderTarget(this.sceneRT); r.clear(); r.render(this.scene, cam); r.setMRT(null);
     // lens + circle of confusion
     const P = post.U, F = st.focus, D = !!(show.dof && F && (F.px > 0 || F.edge > 0 || F.spot > 0));
-    P.k.value = c.k; P.aspect.value = this.W / this.H; P.sq.value = c.squint;
+    P.k.value = c.k; P.aspect.value = this.aspect; P.sq.value = c.squint;
     P.fD.value = D ? F.D : 0; P.ppd.value = D ? F.px : 0; P.band.value = D ? F.band : 0; P.maxc.value = D ? F.max : 0; P.edge.value = D ? F.edge : 0; P.es.value = D ? F.es : 1;
     P.sp.value.set(D ? F.sp[0] : .5, D ? 1 - F.sp[1] : .5); P.spot.value = D ? F.spot : 0; P.spr.value = D ? F.spotR : 1; P.spf.value = D ? F.spotF : 1;
     const outl = !!this.pixel?.outlines; P.alt.value = outl ? 1 : 0;
@@ -392,7 +398,7 @@ export class ShotRenderer {
     const f0 = c.target.map((v, i) => v - c.eye[i]), D = Math.hypot(...f0), f = nrm(f0);
     const r = nrm([f[1] * c.up[2] - f[2] * c.up[1], f[2] * c.up[0] - f[0] * c.up[2], f[0] * c.up[1] - f[1] * c.up[0]]);
     const u = [r[1] * f[2] - r[2] * f[1], r[2] * f[0] - r[0] * f[2], r[0] * f[1] - r[1] * f[0]], dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-    const aspect = this.W / this.H, px = 2 * D * Math.tan(c.fovRender * Math.PI / 360) / this.H / (1 + c.k * (aspect * aspect + 1));
+    const aspect = this.aspect, px = 2 * D * Math.tan(c.fovRender * Math.PI / 360) / this.H / (1 + c.k * (aspect * aspect + 1));
     const er = dot(c.eye, r) / px, eu = dot(c.eye, u) / px, dr = Math.round(er) - er, du = Math.round(eu) - eu;
     const d = r.map((v, i) => (v * dr + u[i] * du) * px);
     return { camera: { ...c, eye: add(c.eye, d), target: add(c.target, d) }, off: [-dr, du] };

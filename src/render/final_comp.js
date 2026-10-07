@@ -94,7 +94,8 @@ export function makeAreaUpscale({ srcTex, distTex, cocTex, popsTex, crtColor, bl
   const U = { src: uniform(new THREE.Vector2(854, 480)), dst: uniform(new THREE.Vector2(3840, 2160)), levels: uniform(0),
     detail: uniform(0), k: uniform(0), aspect: uniform(16 / 9), tanY: uniform(0.27), eye: v3u(), cf: v3u(), cr: v3u(), cu: v3u(),
     g00: v3u(), gn: v3u(), da: v3u(), db: v3u(), ub: uniform(new THREE.Vector4(0, 0, 1, 1)), popsOn: uniform(0), scrLines: uniform(0),
-    bloom: uniform(0), off: uniform(new THREE.Vector2(0, 0)) };
+    bloom: uniform(0), off: uniform(new THREE.Vector2(0, 0)),
+    deflicker: uniform(0) };   // the Wii's deflicker: a vertical [1 2 1] / 4 filter on the frame buffer as it's sent to the TV
   const src = texture(srcTex), dist = texture(distTex), coc = texture(cocTex), pops = texture(popsTex), bloom = texture(bloomTex);
   // 4x4 Bayer threshold in [0, 1) for integer texel coordinates
   const bayer2 = a => a.x.mul(0.5).add(a.y.mul(a.y).mul(0.75)).fract();
@@ -119,7 +120,9 @@ export function makeAreaUpscale({ srcTex, distTex, cocTex, popsTex, crtColor, bl
     const a = p.sub(0.5).mul(s).add(U.off), b = p.add(0.5).mul(s).add(U.off);
     const i0 = floor(a), w = clamp(i0.add(1).sub(a).div(b.sub(a)), 0, 1);   // share of the footprint on texel i0
     const t = (x, y) => { const ti = i0.add(vec2(x, y)), tq = ti.add(0.5).div(U.src);
-      const c = src.sample(tq).level(0).rgb.add(bloom.sample(tq).level(0).rgb.mul(U.bloom));   // bloom joins the frame buffer, before the dither
+      const c0 = src.sample(tq).level(0).rgb.add(bloom.sample(tq).level(0).rgb.mul(U.bloom));   // bloom joins the frame buffer, before the dither
+      const dy = vec2(0, float(1).div(U.src.y)), cdf = src.sample(tq.sub(dy)).level(0).rgb.add(src.sample(tq.add(dy)).level(0).rgb).add(c0.mul(2)).mul(0.25);
+      const c = select(U.deflicker.greaterThan(0), mix(c0, cdf, U.deflicker), c0);
       const L = max(U.levels, 1);
       return select(U.levels.greaterThan(0.5), min(floor(c.mul(L).add(bayer4(ti))).div(L), vec3(1)), c); };
     const up = mix(mix(t(1, 1), t(0, 1), w.x), mix(t(1, 0), t(0, 0), w.x), w.y);
