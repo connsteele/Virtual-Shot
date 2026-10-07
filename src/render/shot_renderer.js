@@ -1,7 +1,7 @@
 // Builds a three.js scene from the scene document and renders evaluated frames with the Black Page look.
 // WebGPURenderer (falls back to WebGL2 by itself) with TSL materials; no colour management, like the engine.
 import * as THREE from 'three/webgpu';
-import { mrt, output, vec2, vec4, positionWorld, cameraPosition, uniform, uv, Fn, texture, mix, select } from 'three/tsl';
+import { mrt, output, vec2, vec3, vec4, float, positionWorld, cameraPosition, uniform, uv, Fn, texture, mix, select, abs, exp, max, luminance } from 'three/tsl';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { bodyMaterial, crtMaterial, glowMaterial, makeLightUniforms } from './materials.js';
 import { makePost } from './post.js';
@@ -299,7 +299,9 @@ export class ShotRenderer {
     cam.position.set(...c.eye); cam.up.set(...c.up); cam.lookAt(v3(c.target)); cam.updateProjectionMatrix(); cam.updateMatrixWorld(true);
     // lights and look
     const rk = st.revealK, L = st.lighting;
-    U.sp.value.set(...add(g.ctr, scl(g.n, W_ * .06))); U.sn.value.set(...g.n); U.sc.value.set(...st.glowCol);
+    U.sp.value.set(...add(g.ctr, scl(g.n, W_ * (this.spFwd ?? .06)))); U.sn.value.set(...g.n); U.sc.value.set(...st.glowCol);   // spFwd: research hook (re-tuning the fake against RT)
+    if (this.glassMap) { const gm = this.glassMap; U.ga.value.set(...gm.p00); U.gu.value.set(...gm.eu); U.gv.value.set(...gm.ev); }
+    U.area.value = this.fakeArea ? 1 : 0; U.aRef.value = this.rtl?.U.refDist.value ?? 0.5;   // research hook: the screen as an area light
     U.amb.value = L.ambient; U.si.value = L.screen; U.bp.value.set(...L.bouncePos); U.bi.value = L.bounce; U.bl.value = rk;
     const led = st.led; U.lp.value.set(...add(led.pos, scl(led.n, W_ * .004))); U.lpRaw.value.set(...led.pos); U.lc.value.set(...led.color);
     U.li.value = led.intensity; U.lrad.value = W_ * .035;
@@ -351,11 +353,63 @@ export class ShotRenderer {
     const scale = c.k > 1e-4 ? Math.min(2, Math.ceil(c.ov * 2) / 2) : 1, sw = Math.round(this.W * scale), sh = Math.round(this.H * scale);
     if (this.sceneRT.width !== sw || this.sceneRT.height !== sh) this.sceneRT.setSize(sw, sh);
     if (accum) RL.U.any.value = 0;   // accumulating: a plain pass for the distance buffer (haze, focus), then the RT pass
-    this.mark('scene'); r.setMRT(this.sceneMRT); r.setRenderTarget(this.sceneRT); r.clear(); r.render(this.scene, cam); r.setMRT(null);
+    if (rtOn && !accum && this.rtPrepass) this.prepassScene(this.sceneRT, 'scene');
+    else { this.mark('scene'); r.setMRT(this.sceneMRT); r.setRenderTarget(this.sceneRT); r.clear(); r.render(this.scene, cam); r.setMRT(null); }
     if (accum) { RL.U.any.value = 1; this.rtPass(); }
     if (RL) post.U.alt.value = accum ? 1 : 0;
     this.postState = { c, sw, sh, show, st };
     this.post3D();
+  }
+
+  /** Depth pre-pass for the ray-traced lighting (research; `rtPrepass`, off by default): the scene is drawn once with
+   *  the ray tracing off (cheap: it lays depth and the distance pass), then again with the opaque materials testing
+   *  depth-equal and not writing depth, so only the front surface of each sample runs the tracer. The body shader has
+   *  Discard (alpha cut-outs), which turns early depth testing off when it writes depth; with depth writes off in the
+   *  second pass the test can run before the shader. The glows (additive) are left out of the first pass. */
+  prepassScene(target, name) {
+    const r = this.renderer, RL = this.rtl, any = RL.U.any.value;
+    if (!this.opaqueMats) { this.opaqueMats = new Set(); const glow = new Set(this.glows.map(g => g.material));
+      this.scene.traverse(m => { if (m.isMesh && !m.material.transparent && !glow.has(m.material)) this.opaqueMats.add(m.material); }); }
+    const gv = this.glows.map(g => g.visible); this.glows.forEach(g => { g.visible = false; });
+    RL.U.any.value = 0;
+    this.mark(name + ' depth pre-pass'); r.setMRT(this.sceneMRT); r.setRenderTarget(target); r.clear(); r.render(this.scene, this.camera);
+    RL.U.any.value = any; this.glows.forEach((g, i) => { g.visible = gv[i]; });
+    for (const m of this.opaqueMats) { m.depthFunc = THREE.EqualDepth; m.depthWrite = false; }
+    const ac = r.autoClear; r.autoClear = false;
+    this.mark(name); r.render(this.scene, this.camera);
+    r.autoClear = ac; r.setMRT(null);
+    for (const m of this.opaqueMats) { m.depthFunc = THREE.LessEqualDepth; m.depthWrite = true; }
+  }
+
+  /** Research: an edge-aware a-trous filter (5x5 B3-spline taps at steps 1, 2, 4, ...) over the accumulated ray-traced
+   *  image (accA), weighted by distance (from the RT pass's distance attachment) and luminance; then lens, focus and the
+   *  composite again. Not wired to a toggle: called by tools/rt_eval.js to compare against accumulation. */
+  denoiseRT(iters = 3, { sigmaZ = 0.01, sigmaL = 0.25 } = {}) {
+    if (!this.rtl || this.rtAccum < 1) return false;
+    const r = this.renderer;
+    if (!this.dn) {
+      const U = { step: uniform(1), px: uniform(new THREE.Vector2()), sz: uniform(sigmaZ), sl: uniform(sigmaL) }, zt = texture(this.ptRT.textures[1]);
+      const k = [1 / 16, 1 / 4, 3 / 8, 1 / 4, 1 / 16];
+      const mk = srcTex => { const src = texture(srcTex); const m = new THREE.NodeMaterial(); m.depthTest = m.depthWrite = false;
+        m.fragmentNode = Fn(() => {
+          const c0 = src.sample(uv()).rgb, z0 = zt.sample(uv()).r, l0 = luminance(c0), sum = vec3(0).toVar(), ws = float(0).toVar();
+          for (let j = -2; j <= 2; j++) for (let i = -2; i <= 2; i++) {
+            const o = uv().add(vec2(i, j).mul(U.px).mul(U.step)), c = src.sample(o).rgb, z = zt.sample(o).r;
+            const w = exp(abs(z.sub(z0)).div(max(z0.mul(U.sz), 1e-4)).negate().sub(abs(luminance(c).sub(l0)).div(U.sl))).mul(k[i + 2] * k[j + 2]);
+            sum.addAssign(c.mul(w)); ws.addAssign(w);
+          }
+          return vec4(sum.div(max(ws, 1e-6)), 1);
+        })(); return new THREE.QuadMesh(m); };
+      this.dn = { U, aToB: mk(this.accA.texture), bToA: mk(this.accB.texture) };
+    }
+    const U = this.dn.U; U.sz.value = sigmaZ; U.sl.value = sigmaL; U.px.value.set(1 / this.accA.width, 1 / this.accA.height);
+    for (let i = 0; i < iters; i++) {
+      U.step.value = 2 ** i; this.mark('rt denoise');
+      if (i % 2 === 0) { r.setRenderTarget(this.accB); this.dn.aToB.render(r); } else { r.setRenderTarget(this.accA); this.dn.bToA.render(r); }
+    }
+    if (iters % 2 === 1) { r.setRenderTarget(this.accA); this.accCopy.render(r); }
+    this.post3D(); this.mark('composite'); r.setRenderTarget(null); this.comp.quad.render(r);
+    return true;
   }
 
   /** One ray-traced pass into ptRT, folded into the running mean (accA) that the lens reads. */
@@ -363,7 +417,8 @@ export class ShotRenderer {
     const r = this.renderer, n = this.rtAccum, w = this.sceneRT.width, h = this.sceneRT.height;
     for (const t of [this.ptRT, this.accA, this.accB]) if (t.width !== w || t.height !== h) t.setSize(w, h);
     this.rtl.U.sample.value = n;
-    this.mark(n === 0 ? 'rt scene' : 'rt scene (refine)'); r.setMRT(this.sceneMRT); r.setRenderTarget(this.ptRT); r.clear(); r.render(this.scene, this.camera); r.setMRT(null);
+    if (this.rtPrepass) this.prepassScene(this.ptRT, n === 0 ? 'rt scene' : 'rt scene (refine)');
+    else { this.mark(n === 0 ? 'rt scene' : 'rt scene (refine)'); r.setMRT(this.sceneMRT); r.setRenderTarget(this.ptRT); r.clear(); r.render(this.scene, this.camera); r.setMRT(null); }
     this.accW.value = 1 / (n + 1);
     this.mark('rt accumulate'); r.setRenderTarget(this.accB); this.accQuad.render(r); r.setRenderTarget(this.accA); this.accCopy.render(r);
     this.rtAccum = n + 1;

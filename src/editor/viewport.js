@@ -109,7 +109,7 @@ export class Viewport {
       <div class="menu-group"><div class="menu-head">Shadows (research)</div>
         ${item('shafts', 'Light shafts in the haze', 'screen, ring')}${item('softShadows', 'Soft surface shadows', 'screen, ring')}${item('contact', 'Contact shadows (AO)')}${item('hazeShadow', 'Haze self-shadowing', 'screen, ring')}${item('rtShadows', 'Ray-traced screen shadows', 'surfaces, WebGPU')}</div>
       <div class="menu-group"><div class="menu-head">Ray-traced lighting (research)</div>
-        ${item('rtGI', 'Screen light + one bounce (GI)', 'WebGPU')}${item('rtAO', 'Ray-traced AO')}${item('rtRefl', 'Reflections', 'glass, plastic')}${item('rtPT', 'Path-traced still', 'refines while idle')}</div>
+        ${item('rtGI', 'Screen light + one bounce (GI)', 'WebGPU')}${item('rtAO', 'Ray-traced AO')}${item('rtRefl', 'Reflections', 'glass, plastic')}${item('rtPT', 'Path-traced still', 'refines while idle')}${item('rtPrepass', 'Depth pre-pass', 'faster, same picture')}</div>
       <div class="menu-group"><div class="menu-head">Overlays</div>
         ${item('safe', 'Safe frames', 'camera')}${item('grid', 'Grid', 'free')}${item('frustum', 'Shot camera', 'free')}${item('hazeBox', 'Haze bounds', 'free')}
         ${item('lights', 'Lights and glass axes', 'free')}${item('bounds', 'Selection bounds', 'free')}</div>

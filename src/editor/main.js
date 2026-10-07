@@ -55,14 +55,17 @@ async function boot() {
   window.VS = { perf: { report: () => E.perf.report(), on: v => E.perf.toggle(v !== false) }, E, cmd: (n, a) => E.cmd.run(n, a), commands: () => E.cmd.list(), evaluate: t => evaluate(E.doc, t, shot.geo, E.ix) };
 
   // ---- viewport visibility (Blender's eye toggles and overlays, Unreal's Show menu): editor-only, kept in this browser
-  E.show = { ...SHOW, safe: true, grid: true, frustum: true, hazeBox: true, lights: true, bounds: true };
+  E.show = { ...SHOW, rtPrepass: false, safe: true, grid: true, frustum: true, hazeBox: true, lights: true, bounds: true };
   E.hidden = new Set(); E.refineMode = 'idle'; E.fpsCap = { camera: 0, free: 0 };   // 0 = the display's rate
   const viewKey = 'vs-editor-view:' + doc.name;
   try { const v = JSON.parse(localStorage.getItem(viewKey) || 'null');
     if (v) { Object.assign(E.show, v.show); E.hidden = new Set(v.hidden || []); E.refineMode = v.refine || 'idle'; E.statsOn = !!v.stats; Object.assign(E.fpsCap, v.fps); } } catch { /* storage may be blocked */ }
   const keepView = () => { try { localStorage.setItem(viewKey, JSON.stringify({ show: E.show, hidden: [...E.hidden], refine: E.refineMode, stats: !!E.statsOn, fps: E.fpsCap })); } catch { /* storage may be blocked */ } };
   E.keepView = keepView;
-  E.setShow = (k, on) => { E.show[k] = on; keepView(); E.emit('show'); E.requestRender(); };
+  // ray-traced lighting depth pre-pass (research, off by default; ?rtprepass): a renderer setting, the picture is the same
+  if (params.has('rtprepass')) E.show.rtPrepass = true;
+  shot.rtPrepass = !!E.show.rtPrepass;
+  E.setShow = (k, on) => { E.show[k] = on; if (k === 'rtPrepass') shot.rtPrepass = !!on; keepView(); E.emit('show'); E.requestRender(); };
   E.setHidden = (id, hide) => { hide ? E.hidden.add(id) : E.hidden.delete(id); keepView(); E.emit('show'); E.requestRender(); };
   E.revealAll = () => { E.hidden.clear(); keepView(); E.emit('show'); E.requestRender(); };
   E.setFpsCap = n => { E.fpsCap[E.view] = n; keepView(); E.emit('show'); };

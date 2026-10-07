@@ -703,6 +703,101 @@ or a denoiser; use the ray-traced terms to re-tune the fake rather than replace 
 less light on the bezel front, the bounce point moved under the screen); bake the screen GI for the static props (only
 the remote moves); room geometry if reflections ever matter.
 
+### Research pass (7 Oct, overnight)
+
+**Added (off by default; f300 / f720 with everything off: 0 differing pixels vs the branch base, checked before and
+after the material change).**
+- **Depth pre-pass** for the RT scene pass (Show > Ray-traced lighting > Depth pre-pass, `?rtprepass`;
+  `ShotRenderer.rtPrepass`, `prepassScene()`): the scene is drawn once with the tracer off (lays depth and the distance
+  pass, glows left out), then again with the opaque materials at depth-equal and no depth writes. **Same picture: 0
+  differing pixels** (f720 and f1000, GI and all toggles).
+- `denoiseRT()`: a research edge-aware a-trous filter over the accumulated RT image (distance + luminance weights).
+- Research hooks for re-tuning the fake: `shot.spFwd` (where the fake's point light sits in front of the glass) and
+  `shot.fakeArea` + `U.area/ga/gu/gv/aRef` in `bodyMaterial`: the glass as an **unshadowed rectangular area light**
+  (Lambert's polygon formula), calibrated like the RT light (equal to the spill law on the axis at `refDist`).
+- Scripts: `tools/rt_research/*.js` (page-side; run through `tools/headless.mjs`).
+
+**Headline findings**
+1. **The depth pre-pass is the biggest win: the RT scene pass drops 2-3x for the same picture.** Clean retake (two
+   independent runs agree within a few %; see the GPU note below), Render quality, scene pass ms without -> with:
+   GI 44 / 76 / 23 -> 20 / 27 / 10 (f420 / f720 / f1000), AO 13 / 21 / 7 -> 4.9 / 7.6 / 2.4, reflections 9 / 14 / 6 ->
+   3.4 / 4.3 / 2.2, all three 68 / 93 / 32 -> 30 / 37 / 16; a path-traced sample 12 / 17 / 5.6 -> 5.4 / 6.3 / 2.2 and a
+   refine pass (with DOF) 20 / 25 / 13 -> 13 / 14 / 10. Play quality, all three: **22 / 29 / 10 -> 8.3 / 13.9 / 4.3 ms**
+   (frame totals 27 / 34 / 15 -> 14 / 19 / 9). The pre-pass itself costs 0.06-0.4 ms. Turn it on for every RT toggle
+   (and section 9's RT shadows would gain the same way).
+2. **Cost is linear in rays and in pixels, and the lens overscan makes the RT pixels 2.25x the output.** GI at f720 with
+   the pre-pass: 1+1 rays 2.9 ms, 4+2 7.4, 9+4 15.5, 16+8 30, 36+16 55, 64+32 99 (without: 7.4 ... 297). AO 2 / 4 / 8 / 16 /
+   32 rays: 2.0 / 3.6 / 7.5 / 14.5 / 34 ms. At f720 the scene buffer is 1.5x the output each way (lens overscan), so a
+   1080p frame traces 2880x1620: all three toggles 14 ms Play / 39 ms Render; output 540p -> 2160p (scene 1440x810 ->
+   5760x3240): Play 4.2 / 6.6 / 14 / 18.5 / 49 ms, Render 13 / 22 / 39 / 58 / 162 ms (~3 ms per traced megapixel in Play,
+   ~8.5 in Render). Tracing at the output resolution (or half) and upsampling into the overscanned buffer is the next lever.
+3. **Temporal accumulation is the right Play denoiser here; a plain spatial filter is not.** GI against its own 256-pass
+   result: 1 pass 32.9 dB (f720) / 26.3 dB (f1000), 2 passes 38 / 31, 4 passes 41 / 34, 8 passes 43 / 37 (1-2% of pixels
+   off by more than 8/255), 16 passes 45 / 40, 64 passes 48 / 46. Against the path-traced reference it levels off at
+   ~43 dB / ~36 dB from 16 passes (that's the one-bounce bias, not noise). So ~8 frames of history converge the GI for
+   a still camera (0.13-0.33 s at 60/24 fps); with camera moves it needs reprojection (the distance pass gives
+   position), and the chat changes the light every frame, so history must be short or light-aware. The a-trous filter
+   (0.5-0.7 ms) **hurt**: +1.4 dB at f720 for one pass, -2 to -5 dB at f1000, because it filters the shaded colour: it
+   blurs the screen's text (emissive) and the textures (`sheets\f01000_converge_denoise.jpg`). A spatial denoiser needs
+   demodulated irradiance (light / albedo, an albedo + emissive mask output from the body shader) and variance guidance
+   (SVGF-style), or skip it and use accumulation + reprojection.
+4. **Lit test scene (free view, lit for editing): the fake is ~22 dB from the path tracer, RT GI ~35 dB.** f420 / f720 /
+   f1000: shipped fake 23.3 / 22.5 / 21.1 dB against the path-traced still (128 samples), 10-13% of pixels off by more
+   than 8/255; RT GI (32 passes) 35.5 / 35.5 / 34.7 dB, 2.2-2.7%; all three RT toggles 34.0 / 33.8 / 32.9 dB (AO and the
+   reflections aren't in the path tracer). The fake lights the bezel front evenly and leaves the keyboard dim; the
+   physical light leaves the bezel front dark, blows out the recess lip and lights the keyboard, pad and desk
+   (`sheets\lit_free_fake_gi_pt.jpg`).
+5. **Re-tuning the fake against RT: its light *law* is the limit, not its parameters.** A grid fit (screen intensity x
+   0.5-8, the fake's colour vs the screen's mean colour, the point light's position, bounce x 0-2, bounce point; fitted
+   on f720 + f1000, f420 held out) gets the shipped spill law only to ~25-26 dB (best: screen x4, no bounce). Replacing
+   the law with an unshadowed analytic area light gets **30.0 / 29.7 / 26.9 dB** (f720 / f420 held out / f1000) at x5,
+   no rays, a few ALU ops (`sheets\retune_f00720.jpg`: it reproduces the dark bezel front, bright lip and lit
+   keyboard). The screen's colour vs the fake's single colour barely matters at these frames (+-0.5 dB).
+
+**Open issue found: the RT light's absolute level.** With the same calibration the analytic area light should match the
+RT direct term (shadows can only remove light), but in the free view at f720 the RT direct term is ~3x brighter on
+average (display means 7.3 / 5.7 / 6.0 vs 2.5 / 1.6 / 1.5; `retune\terms_f00720_*.png`), and the fit wants the area light
+at x5. Either the RT's screen colour scale (`screenGain` x the light grid's units) or my analytic term is off by that
+factor; check before treating RT as the absolute reference. Where light lands is robust either way.
+
+**Reference: Blender Cycles skipped.** The in-engine path tracer is the like-for-like reference (same triangles, same
+per-triangle albedo, same display-referred light units); a Cycles render would need the scene rebuilt from the GLBs and
+placements, the chat image as an emissive plane and the units calibrated to this renderer's display-referred spill,
+which is more than this pass's budget, and opening a scene in the running Blender would touch Connor's session. Worth
+doing once the absolute-level question above is settled (Cycles would answer it).
+
+**Recommendations for the real build**
+- Keep the fake as the look; use RT / the path tracer as a **lookdev reference** in the editor (a toggle and an A/B
+  view), not as the shipping lighting. Connor's call per the build's finding that the fake is a mood choice.
+- Re-tune the fake by **changing its law first**: the screen as an analytic (unshadowed) rectangular area light, with
+  the RT-shadowed version as the "physical" look preset. Then tune intensity per look preset; keep the bounce as a
+  look control (the fit doesn't want it at these frames).
+- If RT ships as a look: depth pre-pass always; trace at output resolution (not the overscanned buffer), Play at 4+2 /
+  4 / 1 rays, temporal accumulation with reprojection keyed on the distance pass, history reset when the chat's light
+  grid changes a lot; no spatial filter until there's demodulated irradiance.
+- Fix the absolute-level question (above) before any number-matching against Cycles or a photo.
+
+**Costs (GPU ms, headless Chrome, RTX 4090, under the GPU lock).** Full tables in `research\timings\rt_bench1.json` /
+`rt_bench2.json` (two runs of the same retake) and `rt_bench3.json` (rays, resolution). The haze march dominates Render
+frames (142-181 ms at these frames, the same in both runs, so the build's "178-181 under contention vs 108-134" was
+frame-dependent, not contention). **GPU note:** another agent's headless Chrome (CDP 9348) was running GPU work
+without the lock during this pass: `nvidia-smi` read 7-47% between my runs (22-47% for a minute before the scaling
+bench). The two independent cost retakes agree within a few % except f720 GI/all at Render without the pre-pass (76 vs
+62 ms, 93 vs 109 ms), so treat those two cells as +-15%.
+
+**three.js / WebGPU gotchas (new)**
+- `material.depthFunc` / `depthWrite` can be flipped per pass: the material cache key includes them, so three builds a
+  second pipeline once and switches; with Discard in the shader, the depth-equal pass with writes off can test early (most likely where the 2-3x
+  comes from: overdrawn fragments no longer run the tracer).
+- Don't put a `//` comment in the middle of a line of chained statements: it silently drops the rest of the line (it
+  turned off the screen light's colour for one test run here; caught and fixed).
+- A `willReadFrequently` 2D canvas returned the same pixels for different WebGPU frames here; a default 2D context works.
+
+**Frames and sheets:** `G:\Claude\Virtual Legacy\Channel\Virtual Shot spike\rt_lighting\research\`: `sheets\`
+(`prepass_f00720.jpg`, `lit_free_fake_gi_pt.jpg`, `f00720_converge_denoise.jpg`, `f01000_converge_denoise.jpg`,
+`retune_f00720.jpg`, `retune_f01000.jpg`), `prepass\`, `converge\`, `denoise\`, `lit\`, `retune\`, `timings\`,
+`bitcheck_off\`, `bitcheck_off2\`.
+
 ## Running the spike
 
 ```

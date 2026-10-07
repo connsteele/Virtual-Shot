@@ -1,7 +1,7 @@
 // TSL materials: the Black Page engine's GLSL rewritten as three.js node graphs (WebGPU first, WebGL2 fallback).
 import * as THREE from 'three/webgpu';
 import { Fn, uniform, uniformArray, texture, uv, vec2, vec3, vec4, float, mix, clamp, max, min, dot, normalize, length, exp, sin, abs, pow,
-  positionWorld, normalWorldGeometry, cameraPosition, If, Discard, select, mrt } from 'three/tsl';
+  positionWorld, normalWorldGeometry, cameraPosition, If, Discard, select, mrt, acos, cross } from 'three/tsl';
 
 /** smoothstep that also works with edge0 > edge1 (GLSL drivers allow it; WGSL's builtin does not promise it). */
 export const sstep = (e0, e1, x) => { const t = clamp(float(x).sub(e0).div(float(e1).sub(e0)), 0, 1); return t.mul(t).mul(float(3).sub(t.mul(2))); };
@@ -13,6 +13,8 @@ export function makeLightUniforms() {
     lp: uniform(new THREE.Vector3()), lpRaw: uniform(new THREE.Vector3()), lc: uniform(new THREE.Vector3()), li: uniform(0), lrad: uniform(0.01),
     amb: uniform(0), si: uniform(4.5), bp: uniform(new THREE.Vector3()), bi: uniform(0), bl: uniform(1),
     rp: uniform(new THREE.Vector3()), rc: uniform(new THREE.Vector3()), ri: uniform(0), rrad: uniform(1), eStr: uniform(0),
+    // research (re-tuning the fake against RT): the screen as an unshadowed rectangular area light; area 0 = the engine's law
+    area: uniform(0), ga: uniform(new THREE.Vector3()), gu: uniform(new THREE.Vector3()), gv: uniform(new THREE.Vector3()), aRef: uniform(0.5),
   };
 }
 
@@ -31,6 +33,17 @@ export function bodyMaterial(U, { map = null, emissiveMap = null, ledRect = [2, 
     const lobe = clamp(dot(L.negate(), U.sn).mul(0.7).add(0.3), 0, 1);
     const face = max(dot(n, L).mul(0.85).add(0.15), 0).mul(lobe);
     let spill = face.mul(U.si).div(d.mul(d).mul(5).add(1));
+    {   // research (U.area = 1): the glass as an unshadowed Lambertian rectangle (Lambert's polygon formula, the form factor
+        // to the quad), calibrated like the ray-traced light: equal to the spill law on the axis at aRef (si aRef^2 / (5 aRef^2 + 1)
+        // x pi F / area). Only the side in front of the glass is lit; the horizon isn't clipped (max 0).
+      const q = [U.ga, U.ga.add(U.gu), U.ga.add(U.gu).add(U.gv), U.ga.add(U.gv)].map(c => normalize(c.sub(P)));
+      let phi = vec3(0);
+      for (let i = 0; i < 4; i++) { const a = q[i], b = q[(i + 1) % 4]; phi = phi.add(normalize(cross(a, b)).mul(acos(clamp(dot(a, b), -1, 1)))); }
+      const toward = U.ga.add(U.gu.mul(0.5)).add(U.gv.mul(0.5)).sub(P), phiS = select(dot(phi, toward).lessThan(0), phi.negate(), phi);
+      const F = max(dot(phiS, n), 0).div(2 * Math.PI), Ar = length(cross(U.gu, U.gv)), front = dot(P.sub(U.ga), U.sn).greaterThan(0);
+      const r2 = U.aRef.mul(U.aRef), areaE = select(front, U.si.mul(r2).div(r2.mul(5).add(1)).mul(F).mul(Math.PI).div(max(Ar, 1e-6)), float(0));
+      spill = select(U.area.greaterThan(0.5), areaE, spill);
+    }
     if (sh) {   // soft shadows from the screen (Show menu, off by default): mean visibility over the screen's patches
       // The lookup point is a var declared before the If: a node first built inside an If is hoisted into a var that
       // is only assigned when the branch runs, which broke the default (off) picture when P or L was reused there.
