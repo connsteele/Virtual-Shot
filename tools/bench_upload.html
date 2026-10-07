@@ -1,0 +1,39 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Upload bench</title>
+<!-- Which way of getting a Canvas 2D drawing into a WebGPU texture is fastest in this browser?
+     Opened by tools/bench_upload.mjs in a headless browser; posts its results to /save/perf/. -->
+<script type="module">
+const W = 1920, H = 1330, N = 20, out = { ua: navigator.userAgent, size: `${W}x${H}`, results: {} };
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+try {
+  const adapter = await navigator.gpu.requestAdapter(), device = await adapter.requestDevice(), q = device.queue;
+  out.adapter = adapter.info ? { vendor: adapter.info.vendor, architecture: adapter.info.architecture, description: adapter.info.description } : null;
+  const tex = device.createTexture({ size: [W, H], format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT });
+  // a drawing like the chat: hundreds of glyphs with a glow
+  const draw = (ctx, k) => { ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H); ctx.font = '38px sans-serif'; ctx.fillStyle = '#E3604E'; ctx.shadowColor = 'rgba(255,70,50,.55)'; ctx.shadowBlur = 10;
+    for (let i = 0; i < 400; i++) ctx.fillText(String.fromCharCode(65 + ((i + k) % 26)), 200 + (i % 40) * 28, 200 + Math.floor(i / 40) * 52); ctx.shadowBlur = 0; };
+  const cv = document.createElement('canvas'); cv.width = W; cv.height = H; const ctx = cv.getContext('2d');
+  const cvR = document.createElement('canvas'); cvR.width = W; cvR.height = H; const ctxR = cvR.getContext('2d', { willReadFrequently: true });
+  const off = new OffscreenCanvas(W, H), octx = off.getContext('2d');
+  const time = async (name, fn) => {
+    await fn(0); await q.onSubmittedWorkDone();
+    const cpu = [], all = [];
+    for (let i = 1; i <= N; i++) { const t0 = performance.now(); await fn(i); const t1 = performance.now(); await q.onSubmittedWorkDone(); cpu.push(t1 - t0); all.push(performance.now() - t0); }
+    const med = a => [...a].sort((x, y) => x - y)[a.length >> 1];
+    out.results[name] = { cpu_median_ms: +med(cpu).toFixed(2), with_gpu_median_ms: +med(all).toFixed(2), cpu_max_ms: +Math.max(...cpu).toFixed(2) };
+  };
+  await time('draw only (2D canvas)', async k => { draw(ctx, k); });
+  await time('copyExternalImageToTexture(canvas) [current]', async k => { draw(ctx, k); q.copyExternalImageToTexture({ source: cv }, { texture: tex }, [W, H]); });
+  await time('getImageData + writeTexture', async k => { draw(ctx, k); const d = ctx.getImageData(0, 0, W, H); q.writeTexture({ texture: tex }, d.data, { bytesPerRow: W * 4 }, [W, H]); });
+  await time('willReadFrequently canvas: getImageData + writeTexture', async k => { draw(ctxR, k); const d = ctxR.getImageData(0, 0, W, H); q.writeTexture({ texture: tex }, d.data, { bytesPerRow: W * 4 }, [W, H]); });
+  await time('createImageBitmap(canvas) + copyExternal', async k => { draw(ctx, k); const b = await createImageBitmap(cv); q.copyExternalImageToTexture({ source: b }, { texture: tex }, [W, H]); b.close(); });
+  await time('OffscreenCanvas transferToImageBitmap + copyExternal', async k => { draw(octx, k); const b = off.transferToImageBitmap(); q.copyExternalImageToTexture({ source: b }, { texture: tex }, [W, H]); b.close(); });
+  await time('OffscreenCanvas getImageData + writeTexture', async k => { draw(octx, k); const d = octx.getImageData(0, 0, W, H); q.writeTexture({ texture: tex }, d.data, { bytesPerRow: W * 4 }, [W, H]); });
+  // band only: what a dirty-rectangle upload of a tenth of the texture costs
+  await time('getImageData + writeTexture, 1/10 band', async k => { draw(ctx, k); const d = ctx.getImageData(0, 0, W, H / 10 | 0); q.writeTexture({ texture: tex }, d.data, { bytesPerRow: W * 4 }, [W, H / 10 | 0]); });
+} catch (e) { out.error = String(e && e.stack || e); }
+const name = (navigator.userAgent.includes('Firefox') ? 'firefox' : 'chrome') + '_upload_bench.json';
+await fetch('/save/perf/' + name, { method: 'POST', body: JSON.stringify(out, null, 1) });
+document.title = 'done'; window.BENCH = out;
+</script>

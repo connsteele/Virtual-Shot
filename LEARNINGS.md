@@ -522,6 +522,27 @@ the stats overlay has Record and Stop: everything between them is saved as one c
 with a label, an event log (edits, view and mode switches, playback), long tasks, and a CPU breakdown per frame (2D
 chat, 2D pops, three's encode and texture uploads, panels).
 
+**Connor's first capture was in Firefox 157,** which is his everyday browser. Camera-view frames spent 30–550 ms of CPU
+in three's encode with texture uploads (the 2D chat, flat frame and pops canvases) against 7–25 ms of GPU; drawing the
+chat measured 0–3 ms because Firefox defers the work to the upload. `tools/bench_upload.html` times seven ways of
+getting a 1920×1330 Canvas 2D drawing into a WebGPU texture:
+
+| median CPU ms | Chrome 152 (headless) | Firefox 157 (Connor's) |
+|---|---|---|
+| Draw only | 0.3 | 14 |
+| `copyExternalImageToTexture(canvas)` (current) | 1.1 | 21 |
+| `getImageData` + `writeTexture` | 3.7 | 19 |
+| `createImageBitmap` + copy | 1.9 | 22 |
+| `OffscreenCanvas.transferToImageBitmap` + copy | 1.0 | 25 |
+
+Firefox has no fast path: its Canvas 2D text with glow is drawn on the CPU, and every way into WebGPU costs about
+20 ms more in isolation, and much more inside a real frame. Firefox also rounds `performance.now()` to whole
+milliseconds and resolves `onSubmittedWorkDone()` about every 100 ms, so its stats are coarser. **Decision: Chrome
+(or the Claude app's built-in browser, also Chromium) is the browser for the editor**, and it is what the headless tests
+measure. For the architecture: state the supported browser, and treat Canvas 2D as a convenience for layers that
+change rarely. A layer that animates every frame should be drawn on the GPU (glyph atlas or SDF text), which would also
+make Firefox usable.
+
 ## Running the spike
 
 ```
