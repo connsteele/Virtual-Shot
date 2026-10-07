@@ -116,12 +116,18 @@ export class Viewport {
         ${item('pixOutlines', 'Pixel outlines')}
         ${pick('pixBands', 'Lighting', [[0, 'Smooth'], [1, 'Banded, wide steps'], [2, 'Banded, fine steps']])}
         ${pick('pixBloom', 'Bloom (Wii)', [[0, 'Off'], [0.5, 'Soft'], [1, 'Strong']])}
-        ${item('pixStable', 'Pixel-stable camera', 'experimental')}</div>
+        ${item('pixStable', 'Pixel-stable camera', 'experimental')}
+        ${item('cel', 'Anime cel', 'toon + lines')}
+        ${pick('celTones', 'Tones', [[3, '3 (shadow, mid, lit)'], [2, '2 (shadow, lit)']])}
+        ${pick('celSoft', 'Tone edges', [[0, 'Hard'], [0.03, 'Soft'], [0.12, 'Very soft']])}
+        ${pick('celLines', 'Lines', [[0, 'Off'], [1, '1 px'], [2, '2 px'], [3, '3 px'], [5, '5 px']])}
+        ${pick('celRim', 'Rim light', [[0, 'Off'], [0.5, 'Soft'], [1.2, 'Strong']])}
+        ${pick('celDebug', 'Cel debug', [[0, 'Off'], [1, 'Lines only'], [2, 'Normals'], [3, 'Ids']])}</div>
       <div class="menu-group"><div class="menu-head">Overlays</div>
         ${item('safe', 'Safe frames', 'camera')}${item('grid', 'Grid', 'free')}${item('frustum', 'Shot camera', 'free')}${item('hazeBox', 'Haze bounds', 'free')}
         ${item('lights', 'Lights and glass axes', 'free')}${item('bounds', 'Selection bounds', 'free')}</div>
       <div class="menu-foot"><button type="button" id="revealAll">Reveal hidden objects <kbd>Alt+H</kbd></button>
-        <div class="note">Viewport only: renders to disk always use the full look. Chunky pixels applies to renders too (3840×2160).</div></div>`;
+        <div class="note">Viewport only: renders to disk always use the full look. Chunky pixels and Anime cel apply to renders too.</div></div>`;
     pop.addEventListener('change', e => { const k = e.target.dataset.show, p = e.target.dataset.pick;
       if (k) E.setShow(k, e.target.checked); if (p) E.setShow(p, e.target.value === 'full' ? 'full' : +e.target.value); });
     pop.querySelector('#revealAll').onclick = () => E.revealAll();
@@ -132,7 +138,7 @@ export class Viewport {
     const fps = document.getElementById('fpsSel'); fps.onchange = () => E.setFpsCap(+fps.value); E.on('view', () => { fps.value = String(E.fpsCap[E.view] || 0); });
     const sync = () => {
       pop.querySelectorAll('[data-show]').forEach(i => { i.checked = !!E.show[i.dataset.show]; });
-      pop.querySelectorAll('[data-pick]').forEach(i => { i.value = String(E.show[i.dataset.pick]); i.disabled = !E.show.pixels; });
+      pop.querySelectorAll('[data-pick]').forEach(i => { i.value = String(E.show[i.dataset.pick]); i.disabled = i.dataset.pick.startsWith('cel') ? !E.show.cel : !E.show.pixels; });
       for (const k of ['pixAA', 'pixOutlines', 'pixStable']) pop.querySelector(`[data-show="${k}"]`).disabled = !E.show.pixels;
       const off = ['haze', 'dof', 'lens', 'glows', 'ghosts', 'pops'].filter(k => !E.show[k]).length;
       btn.textContent = off ? `Show (${off} off) ▾` : 'Show ▾'; sel.value = E.refineMode; fps.value = String(E.fpsCap[E.view] || 0);

@@ -5,6 +5,7 @@ import { createCommandStack } from '../core/commands.js';
 import { ChatLayer } from '../layers/chat2d.js';
 import { PopsLayer } from '../layers/pops2d.js';
 import { ShotRenderer, assetUrl, SHOW, PIXEL_LOOK } from '../render/shot_renderer.js';
+import { CEL_LOOK } from '../render/looks/cel.js';
 import { Outliner } from './outliner.js';
 import { Inspector } from './inspector.js';
 import { Viewport } from './viewport.js';
@@ -55,7 +56,7 @@ async function boot() {
   window.VS = { perf: { report: () => E.perf.report(), on: v => E.perf.toggle(v !== false) }, E, cmd: (n, a) => E.cmd.run(n, a), commands: () => E.cmd.list(), evaluate: t => evaluate(E.doc, t, shot.geo, E.ix) };
 
   // ---- viewport visibility (Blender's eye toggles and overlays, Unreal's Show menu): editor-only, kept in this browser
-  E.show = { ...SHOW, pixels: false, pixLines: 480, pixBits: 6, pixAA: false, pixScreen: 1080, pixOutlines: false, pixBands: 0, pixBloom: 0, pixStable: false, safe: true, grid: true, frustum: true, hazeBox: true, lights: true, bounds: true };
+  E.show = { ...SHOW, pixels: false, pixLines: 480, pixBits: 6, pixAA: false, pixScreen: 1080, pixOutlines: false, pixBands: 0, pixBloom: 0, pixStable: false, cel: false, celTones: 3, celSoft: 0.03, celLines: 2, celRim: 0.5, celDebug: 0, safe: true, grid: true, frustum: true, hazeBox: true, lights: true, bounds: true };
   E.hidden = new Set(); E.refineMode = 'idle'; E.fpsCap = { camera: 0, free: 0 };   // 0 = the display's rate
   const viewKey = 'vs-editor-view:' + doc.name;
   try { const v = JSON.parse(localStorage.getItem(viewKey) || 'null');
@@ -67,7 +68,12 @@ async function boot() {
     shot.setPixelLook(S.pixels ? { ...PIXEL_LOOK, lines: +S.pixLines, bits: +S.pixBits, msaa: !!S.pixAA, sharpScreen: S.pixScreen === 'full' ? true : +S.pixScreen,
       outlines: !!S.pixOutlines, bands: +S.pixBands, bloom: +S.pixBloom, stable: !!S.pixStable } : null); };
   if (E.show.pixels) applyPixels();
-  E.setShow = (k, on) => { E.show[k] = on; if (k.startsWith('pix')) applyPixels(); keepView(); E.emit('show'); E.requestRender(); };
+  // the anime cel look (looks/cel.js) is a renderer setting too: it swaps the placed meshes' materials; renders to disk use it
+  if (params.has('cel')) E.show.cel = params.get('cel') !== '0';   // ?cel (headless tests); ?cel=0 forces it off
+  const applyCel = () => { const S = E.show;
+    shot.setCelLook(S.cel ? { ...CEL_LOOK, tones: +S.celTones, soft: +S.celSoft, lines: +S.celLines > 0, lineW: +S.celLines || CEL_LOOK.lineW, rim: +S.celRim, debug: +S.celDebug } : null); };
+  if (E.show.cel) applyCel();
+  E.setShow = (k, on) => { E.show[k] = on; if (k.startsWith('pix')) applyPixels(); if (k.startsWith('cel')) applyCel(); keepView(); E.emit('show'); E.requestRender(); };
   E.setHidden = (id, hide) => { hide ? E.hidden.add(id) : E.hidden.delete(id); keepView(); E.emit('show'); E.requestRender(); };
   E.revealAll = () => { E.hidden.clear(); keepView(); E.emit('show'); E.requestRender(); };
   E.setFpsCap = n => { E.fpsCap[E.view] = n; keepView(); E.emit('show'); };

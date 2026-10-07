@@ -7,6 +7,7 @@ import { bodyMaterial, crtMaterial, glowMaterial, makeLightUniforms } from './ma
 import { makePost, makeOutline } from './post.js';
 import { makeHaze } from './haze.js';
 import { makeComposite, makeHazeMeter, makeEmitAverage, makeAreaUpscale, makeBloom, flatScreenQuad } from './final_comp.js';
+import { CelLook } from './looks/cel.js';
 import { indexDoc } from '../core/evaluate.js';
 import { add, scl, xf, nrm, trsOf } from '../core/vec.js';
 
@@ -60,6 +61,13 @@ export class ShotRenderer {
     if (ct.generateMipmaps !== mip) { Object.assign(ct, { generateMipmaps: mip, minFilter: mip ? THREE.LinearMipmapLinearFilter : THREE.LinearFilter }); ct.dispose(); ct.needsUpdate = true; }
     this.crt.userData.S.mip.value = mip ? 1 : 0;
     this.renderer.setSize(ow, oh, false);
+  }
+
+  /** The anime cel look (looks/cel.js; off by default): toon materials on the placed meshes and line art before the
+   *  lens. look: CEL_LOOK-style settings, or null for off. The next render() draws with it (renders to disk too). */
+  setCelLook(look) {
+    if (look && !this.cel) this.cel = new CelLook(this);
+    this.cel?.set(look);
   }
 
   /** chatCanvas: the tall chat texture; flatCanvas / popsCanvas: the full-frame chat and pops layers (composited here). */
@@ -351,8 +359,11 @@ export class ShotRenderer {
     P.k.value = c.k; P.aspect.value = this.W / this.H; P.sq.value = c.squint;
     P.fD.value = D ? F.D : 0; P.ppd.value = D ? F.px : 0; P.band.value = D ? F.band : 0; P.maxc.value = D ? F.max : 0; P.edge.value = D ? F.edge : 0; P.es.value = D ? F.es : 1;
     P.sp.value.set(D ? F.sp[0] : .5, D ? 1 - F.sp[1] : .5); P.spot.value = D ? F.spot : 0; P.spr.value = D ? F.spotR : 1; P.spf.value = D ? F.spotF : 1;
-    const outl = !!this.pixel?.outlines; P.alt.value = outl ? 1 : 0;
-    if (outl) { const O = this.outline; if (this.outlineRT.width !== sw || this.outlineRT.height !== sh) this.outlineRT.setSize(sw, sh);
+    // cel look: its line art takes the pixel outlines' place (the lens reads outlineRT)
+    const cel = !!this.cel?.on, outl = !!this.pixel?.outlines && !cel; P.alt.value = outl || cel ? 1 : 0;
+    if ((outl || cel) && (this.outlineRT.width !== sw || this.outlineRT.height !== sh)) this.outlineRT.setSize(sw, sh);
+    if (cel) this.cel.pass(r, cam, sw, sh, this.outlineRT);
+    if (outl) { const O = this.outline;
       O.U.px.value.set(1 / sw, 1 / sh); this.mark('outlines'); r.setRenderTarget(this.outlineRT); O.quad.render(r); }
     this.mark('lens'); r.setRenderTarget(this.lensRT); post.quads.lens.render(r);
     this.mark('focus (CoC)'); r.setRenderTarget(this.cocRT); post.quads.coc.render(r);

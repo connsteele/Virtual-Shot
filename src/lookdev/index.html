@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Cel lookdev</title>
+<script type="importmap">
+{ "imports": {
+  "three": "/node_modules/three/build/three.webgpu.js",
+  "three/webgpu": "/node_modules/three/build/three.webgpu.js",
+  "three/tsl": "/node_modules/three/build/three.tsl.js",
+  "three/addons/": "/node_modules/three/examples/jsm/"
+} }
+</script>
+<style>body{margin:0;background:#111;color:#ccc;font:13px system-ui}canvas{display:block;width:100vw;height:auto}#bar{position:fixed;top:8px;left:8px;background:#000a;padding:6px 8px;border-radius:4px}</style>
+</head><body>
+<canvas id="gpu"></canvas>
+<div id="bar">Cel lookdev · <label><input type="checkbox" id="cel" checked> cel</label> <label><input type="checkbox" id="lines" checked> lines</label>
+ <select id="view"><option>wide</option><option>close</option><option>face</option></select> · key <input type="range" id="key" min="0" max="360" value="135"></div>
+<script type="module" src="./lookdev.js"></script>
+</body></html>

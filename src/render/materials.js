@@ -22,6 +22,7 @@ export function makeLightUniforms() {
  *  override colour for the remote's LEDs. Unlit otherwise; no colour management (values are display-referred). */
 export function bodyMaterial(U, { map = null, emissiveMap = null, ledRect = [2, 2, 2, 2], ov = null, scMul = 1, blMul = 1, rawLed = false }) {
   const m = new THREE.MeshBasicNodeMaterial({ side: THREE.DoubleSide });
+  m.userData.opts = { map, emissiveMap, ledRect, ov, scMul, blMul, rawLed };   // looks (looks/cel.js) rebuild the surface from these
   const lr = vec4(...ledRect);
   m.outputNode = Fn(() => {
     const v = uv();
