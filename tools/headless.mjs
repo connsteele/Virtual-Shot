@@ -32,7 +32,10 @@ const evaluate = async js => { const m = await send('Runtime.evaluate', { expres
 await send('Runtime.enable');
 await send('Page.navigate', { url: BASE + urlPath });
 const t0 = Date.now();
+await send('Emulation.setDeviceMetricsOverride', { width: 1920, height: 1080, deviceScaleFactor: 1, mobile: false });
 while (!(await evaluate('window.VS_READY || window.VS_ERROR || false'))) { if (Date.now() - t0 > 120000) throw new Error('page did not load'); await sleep(250); }
 const err = await evaluate('window.VS_ERROR || null'); if (err) throw new Error(err);
 console.log(JSON.stringify(await evaluate(expr), null, 1));
+const shot = flags.find(f => f.startsWith('--shot='));   // --shot=<png path>: a screenshot of the page after the script
+if (shot) { const m = await send('Page.captureScreenshot', { format: 'png' }); fs.writeFileSync(shot.slice(7), Buffer.from(m.result.data, 'base64')); console.log('screenshot', shot.slice(7)); }
 if (!flags.includes('--keep')) { ws.close(); chrome.kill(); setTimeout(() => { try { fs.rmSync(profile, { recursive: true, force: true }); } catch { /* locked */ } }, 1500); }

@@ -68,11 +68,12 @@ export class ShotRenderer {
       return loader.parseAsync(bin.buffer, '');
     };
     const ledRect = ix.obj.led.texelRect, ledTargets = new Set(ix.obj.led.appliesTo || []);
-    this.ledParts = [];
+    this.ledParts = []; this.placed = {};
     for (const o of doc.objects) {
       if (o.type !== 'model') continue;
       const gltf = await loadModel(doc.assets[o.asset]);
       const root = gltf.scene; root.matrixAutoUpdate = false; root.matrix.copy(m4(trsOf(o.transform))); root.userData.base = root.matrix.clone();
+      root.userData.docId = o.id; this.placed[o.id] = root;
       root.updateMatrixWorld(true);
       const ledRe = o.ledParts ? new RegExp(o.ledParts, 'i') : null;
       const meshes = []; root.traverse(n => { if (n.isMesh) meshes.push(n); });
@@ -123,7 +124,7 @@ export class ShotRenderer {
       const im = await loadImage(assetUrl(doc.assets[o.texture])), tx = new THREE.Texture(im);
       Object.assign(tx, { flipY: false, generateMipmaps: false, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, colorSpace: THREE.NoColorSpace, needsUpdate: true });
       const mesh = new THREE.Mesh(quad, bodyMaterial(U, { map: tx, scMul: 1.15, blMul: o.brightness || 1.4, rawLed: true }));
-      mesh.matrixAutoUpdate = false; mesh.matrix.copy(m4(trsOf(o.transform))); scene.add(mesh);
+      mesh.matrixAutoUpdate = false; mesh.matrix.copy(m4(trsOf(o.transform))); mesh.userData.docId = o.id; this.placed[o.id] = mesh; scene.add(mesh);
     }
     // glows: four for the ringing LEDs, one for the power LED
     const plane = new THREE.PlaneGeometry(2, 2);
@@ -191,6 +192,7 @@ export class ShotRenderer {
   /** The haze for this frame: the screen's light grid, then the ray march into hazeRT (a fraction of the scene buffer). */
   renderHaze(st) {
     const r = this.renderer, H = this.haze.U, c = st.camera, gm = this.glassMap, R = st.ring, led = st.led, HZ = this.doc.look.haze;
+    this.emitAvg.U.screenLight.value = HZ.screenLight ?? 100;
     r.setRenderTarget(this.emitHiRT); this.emitFlat.render(r);
     r.setRenderTarget(this.emitRT); this.emitAvg.quad.render(r);
     const f = nrm(c.target.map((v, i) => v - c.eye[i])), rr = nrm([f[1] * c.up[2] - f[2] * c.up[1], f[2] * c.up[0] - f[0] * c.up[2], f[0] * c.up[1] - f[1] * c.up[0]]);
@@ -264,6 +266,36 @@ export class ShotRenderer {
     r.setRenderTarget(this.cocRT); post.quads.coc.render(r);
     const sc = this.H / 1080; P.px.value.set(1 / this.W, 1 / this.H); P.sc.value = sc; P.maxR.value = D ? F.max * sc : 0; P.rs.value = (this.quality === 'play' ? (this.doc.look.haze?.play?.dofStep ?? 2) : 0.5) * sc;
     r.setRenderTarget(this.finalRT); post.quads.dof.render(r);
+  }
+
+  /** After the document changed (editor commands, undo): re-index it and move placed objects to their transforms. */
+  syncFromDoc(doc = this.doc) {
+    this.doc = doc; this.ix = indexDoc(doc);
+    for (const o of doc.objects) { const node = this.placed[o.id]; if (!node || !o.transform) continue;
+      node.matrix.copy(m4(trsOf(o.transform))); if (node.userData.base) node.userData.base = node.matrix.clone(); node.updateMatrixWorld(true);
+      if (o.ring && this.geo.wii) { const M = Array.from(node.matrix.elements); this.geo.wii.M = M; } }
+    if (this.haze) { const H = this.haze.U, HZ = doc.look.haze; H.exposure.value = HZ.exposure ?? 1; }
+  }
+
+  /** Render the scene from an editor camera (free view): the engine picture without lens warp, depth of field, haze
+   *  or the flat layer, lit as after the reveal so it can be worked on before it. Helpers are drawn on top. */
+  renderFree(st, cam, helpers) {
+    const r = this.renderer;
+    const f = new THREE.Vector3(); cam.getWorldDirection(f);
+    const eye = cam.position.toArray(), target = cam.position.clone().add(f).toArray(), up = cam.up.toArray();
+    const fs = { ...st, cut: false, revealK: Math.max(st.revealK, 1), flat: { before: false, overlay: 0 }, focus: null, haze: null,
+      led: { ...st.led, intensity: Math.max(st.led.intensity, 1) },
+      camera: { eye, target, up, fov: cam.fov, fovRender: cam.fov, k: 0, ov: 1, squint: 0, near: cam.near, far: cam.far } };
+    this.render(fs, { final: false, flat: false, pops: false, quality: 'render' });
+    if (helpers) { const ac = r.autoClear; r.autoClear = false; r.setRenderTarget(null); r.render(helpers, cam); r.autoClear = ac; }
+  }
+
+  /** The placed object under a canvas point (ndc -1..1), or null. */
+  pick(ndc, cam) {
+    const rc = new THREE.Raycaster(); rc.setFromCamera(new THREE.Vector2(ndc[0], ndc[1]), cam);
+    const hits = rc.intersectObjects(Object.values(this.placed), true);
+    for (const h of hits) { let n = h.object; while (n && !n.userData.docId) n = n.parent; if (n) return n.userData.docId; }
+    return null;
   }
 
   /** RGBA8 pixels of the last frame (top row first). The WebGL2 backend reads rows bottom-up, WebGPU top-down. */

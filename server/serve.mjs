@@ -56,6 +56,14 @@ async function encodePNG(px, w, h) {
 
 http.createServer((req, res) => {
   const urlPath = req.url.split('?')[0];
+  if (req.method === 'POST' && urlPath.startsWith('/save-scene/')) {   // the editor's Save: a scene file in the repo
+    const name = decodeURIComponent(urlPath.slice(12));
+    if (!/^[A-Za-z0-9_.-]+\.scene\.json$/.test(name)) { res.writeHead(400); return res.end('bad scene name'); }
+    const chunks = []; req.on('data', c => chunks.push(c));
+    req.on('end', () => { try { JSON.parse(Buffer.concat(chunks)); fs.writeFileSync(path.join(REPO, 'scenes', name), Buffer.concat(chunks)); res.writeHead(200); res.end('ok'); }
+      catch (e) { res.writeHead(400); res.end(String(e)); } });
+    return;
+  }
   if (req.method === 'POST' && urlPath.startsWith('/save-idat/')) {
     const rel = decodeURIComponent(urlPath.slice(11)), q = new URL(req.url, 'http://x').searchParams, w = +q.get('w'), h = +q.get('h');
     if (!/^[A-Za-z0-9_.\- /]+$/.test(rel) || rel.split('/').some(s => s === '..' || s.startsWith('.')) || !(w > 0 && h > 0)) { res.writeHead(400); return res.end('bad request'); }

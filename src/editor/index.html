@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Virtual Shot Editor</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&display=swap">
+<script type="importmap">
+{ "imports": {
+  "three": "/node_modules/three/build/three.webgpu.js",
+  "three/webgpu": "/node_modules/three/build/three.webgpu.js",
+  "three/tsl": "/node_modules/three/build/three.tsl.js",
+  "three/addons/": "/node_modules/three/examples/jsm/"
+} }
+</script>
+<link rel="stylesheet" href="./editor.css">
+</head>
+<body>
+<div id="app" class="mode-edit">
+  <header class="topbar">
+    <div class="brand"><b>Virtual Shot</b><span id="docName" class="muted"></span></div>
+    <nav class="modes" role="tablist" aria-label="Mode">
+      <button type="button" role="tab" data-mode="edit" aria-selected="true">Edit</button>
+      <button type="button" role="tab" data-mode="play" aria-selected="false">Play</button>
+      <button type="button" role="tab" data-mode="render" aria-selected="false">Render</button>
+    </nav>
+    <div class="tools">
+      <div class="seg" role="group" aria-label="View">
+        <button type="button" data-view="camera" aria-pressed="true" title="Shot camera (Numpad 0)">Camera</button>
+        <button type="button" data-view="free" aria-pressed="false" title="Free view: middle-drag orbit, Shift+middle pan, wheel zoom">Free</button>
+      </div>
+      <button type="button" id="undo" title="Undo (Ctrl+Z)">Undo</button>
+      <button type="button" id="redo" title="Redo (Ctrl+Shift+Z)">Redo</button>
+      <button type="button" id="save" class="primary" title="Save the scene (Ctrl+S)">Save</button>
+    </div>
+  </header>
+
+  <aside id="outliner" class="panel" aria-label="Outliner">
+    <div class="panel-head">Outliner</div>
+    <div class="panel-body" id="outlinerBody"></div>
+  </aside>
+
+  <main id="viewport" aria-label="Viewport">
+    <div class="vp-stage" id="stage">
+      <canvas id="gpu" width="1920" height="1080"></canvas>
+      <svg id="overlay" viewBox="0 0 1920 1080" preserveAspectRatio="none" aria-hidden="true"></svg>
+      <div class="vp-hud"><span id="hudView">Shot camera</span><span id="hudQuality"></span></div>
+    </div>
+  </main>
+
+  <aside id="inspector" class="panel" aria-label="Inspector">
+    <div class="panel-head" id="inspectorTitle">Inspector</div>
+    <div class="panel-body" id="inspectorBody"></div>
+  </aside>
+
+  <section id="timeline" class="panel" aria-label="Timeline">
+    <div class="transport">
+      <button type="button" data-t="start" title="Go to start (Home)">⏮</button>
+      <button type="button" data-t="prevkey" title="Previous key (J)">◆◀</button>
+      <button type="button" data-t="prev" title="Previous frame (←)">◀</button>
+      <button type="button" data-t="play" id="playBtn" class="primary" title="Play / pause (Space)">Play</button>
+      <button type="button" data-t="next" title="Next frame (→)">▶</button>
+      <button type="button" data-t="nextkey" title="Next key (K)">▶◆</button>
+      <button type="button" data-t="end" title="Go to end (End)">⏭</button>
+      <span class="tc" id="timecode">00:00:00:00</span>
+      <span class="muted tc" id="frameNo">f 0</span>
+      <span class="spacer"></span>
+      <div class="seg" role="group" aria-label="Timeline view">
+        <button type="button" data-tl="dope" aria-pressed="true">Dope sheet</button>
+        <button type="button" data-tl="graph" aria-pressed="false">Graph editor</button>
+      </div>
+      <span class="muted" id="status" role="status"></span>
+    </div>
+    <div class="tl-body">
+      <div class="tl-labels" id="tlLabels"></div>
+      <canvas id="tlCanvas" tabindex="0" aria-label="Timeline: keys, events and playhead"></canvas>
+    </div>
+  </section>
+</div>
+<script type="module" src="./main.js"></script>
+</body>
+</html>
