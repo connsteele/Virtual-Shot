@@ -11,9 +11,22 @@ import { Fn, uniform, texture, uv, vec2, vec3, vec4, float, int, uint, max, min,
   smoothstep, select, Loop, If, Break, screenCoordinate } from 'three/tsl';
 import { noiseTex4, fbm4 } from './cycles_noise.js';
 
+/** The haze density at a glTF-space point (Blender's Position is (x, -z, y)), as a new Fn (one per material). */
+export function densityFn(U, D) {
+  return Fn(([pg]) => {
+    const vb = vec3(pg.x, pg.z.negate(), pg.y).sub(vec3(0, 0, U.t.mul(D.drift)));
+    const nz = noiseTex4(vec4(vb.mul(D.scale), U.t.mul(D.evolve).mul(D.scale)), { detail: D.detail, roughness: D.roughness, distortion: D.distortion });
+    const cs = D.scale * D.coverScale;
+    const cz = fbm4(vec4(vb.mul(cs), U.t.mul(D.evolve * 0.6).add(7.3).mul(cs)), D.coverDetail ?? 2, D.coverRoughness ?? 0.5);
+    const sheet = float(1).sub(smoothstep(0, D.wisp, abs(nz.sub(0.5))));
+    const cover = smoothstep(D.cover[0], D.cover[1], cz);
+    return sheet.mul(cover).mul(2 * D.density);
+  }, { pg: 'vec3', return: 'float' });
+}
+
 const quadMat = node => { const m = new THREE.NodeMaterial(); m.fragmentNode = node; m.depthTest = false; m.depthWrite = false; return m; };
 
-export function makeHaze({ distTex, emitTex, look, shadows = null, ringShadows = null }) {
+export function makeHaze({ distTex, emitTex, look, shadows = null, ringShadows = null, selfShadow = null }) {
   const H = look;   // doc.look.haze
   const U = {
     eye: uniform(new THREE.Vector3()), cr: uniform(new THREE.Vector3()), cu: uniform(new THREE.Vector3()), cf: uniform(new THREE.Vector3()),
@@ -31,16 +44,7 @@ export function makeHaze({ distTex, emitTex, look, shadows = null, ringShadows =
   // Each march material gets its own Fn instances: a Fn with a layout that reads uniforms can't be shared between
   // materials (see LEARNINGS, section 6).
   const buildMarch = (GX, GY) => {
-  /** haze density at a glTF-space point (Blender's Position is (x, -z, y)). */
-  const density = Fn(([pg]) => {
-    const vb = vec3(pg.x, pg.z.negate(), pg.y).sub(vec3(0, 0, U.t.mul(D.drift)));
-    const nz = noiseTex4(vec4(vb.mul(D.scale), U.t.mul(D.evolve).mul(D.scale)), { detail: D.detail, roughness: D.roughness, distortion: D.distortion });
-    const cs = D.scale * D.coverScale;
-    const cz = fbm4(vec4(vb.mul(cs), U.t.mul(D.evolve * 0.6).add(7.3).mul(cs)), D.coverDetail ?? 2, D.coverRoughness ?? 0.5);
-    const sheet = float(1).sub(smoothstep(0, D.wisp, abs(nz.sub(0.5))));
-    const cover = smoothstep(D.cover[0], D.cover[1], cz);
-    return sheet.mul(cover).mul(2 * D.density);
-  }, { pg: 'vec3', return: 'float' });
+  const density = densityFn(U, D);
 
   const hg = cosT => { const g2 = G * G; return float((1 - g2) / (4 * Math.PI)).div(pow(float(1 + g2).sub(cosT.mul(2 * G)), 1.5)); };
 
@@ -55,6 +59,9 @@ export function makeHaze({ distTex, emitTex, look, shadows = null, ringShadows =
       for (let k = 0; k < SH.KX * SH.KY; k++) vis.push(float(1).toVar());
       If(SH.U.shafts.greaterThan(0.5), () => { for (let k = 0; k < vis.length; k++) vis[k].assign(patchVis(x, k % SH.KX, Math.floor(k / SH.KX))); });
     }
+    // haze self-shadowing (Show menu, off by default): light reaching x through the haze, per screen quadrant and ring
+    const SS = selfShadow, T4 = vec4(1).toVar(), TR = float(1).toVar();
+    if (SS) { const ns = SS.nodes(); If(SS.U.on.greaterThan(0.5), () => { T4.assign(ns.screen(x)); TR.assign(ns.ring(x)); }); }
     for (let j = 0; j < GY; j++) for (let i = 0; i < GX; i++) {
       const su = (i + 0.5) / GX, sv = (j + 0.5) / GY;
       const p = U.g00.add(U.geu.mul(su)).add(U.gev.mul(sv));
@@ -63,11 +70,13 @@ export function makeHaze({ distTex, emitTex, look, shadows = null, ringShadows =
       const d2s = d2.add(dA.mul(0.25));   // soften the cell's 1/d^2 for points nearer the glass than the cell size
       const Le = emitNode.sample(vec2(su, sv)).level(0).rgb;   // linear emission already scaled
       const c = Le.mul(cosE.mul(dA).div(d2s).mul(hg(dot(dl, vd))));
-      if (SH) { const [pi, pj] = SH.patchOf(i, j, GX, GY); acc.addAssign(c.mul(vis[pj * SH.KX + pi])); } else acc.addAssign(c);
+      const cT = SS ? c.mul(T4[['x', 'y', 'z', 'w'][SS.quadOf(i, j, GX, GY)]]) : c;
+      if (SH) { const [pi, pj] = SH.patchOf(i, j, GX, GY); acc.addAssign(cT.mul(vis[pj * SH.KX + pi])); } else acc.addAssign(cT);
     }
     for (const [P, I] of [[U.ringPos, U.ringI], [U.ledPos, U.ledI]]) {
       const dv = x.sub(P), d2 = max(dot(dv, dv), 1e-6), dl = dv.div(sqrt(d2));
       let c = I.div(d2).mul(hg(dot(dl, vd)));
+      if (P === U.ringPos && SS) c = c.mul(TR);
       if (P === U.ringPos && ringShadows) {   // shafts from the ringing remote's light
         const rv = float(1).toVar(), RS = ringShadows;
         If(RS.U.shafts.greaterThan(0.5).and(I.x.greaterThan(0)), () => { rv.assign(RS.nodes().vis(x)); });

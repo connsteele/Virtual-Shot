@@ -8,6 +8,7 @@ import { makePost } from './post.js';
 import { makeHaze } from './haze.js';
 import { makeScreenShadows, makePointShadows } from './shadows.js';
 import { makeAO } from './ao.js';
+import { makeHazeShadow } from './haze_shadow.js';
 import { makeComposite, makeHazeMeter, makeEmitAverage, flatScreenQuad } from './final_comp.js';
 import { indexDoc } from '../core/evaluate.js';
 import { add, scl, xf, nrm, trsOf } from '../core/vec.js';
@@ -23,9 +24,9 @@ export const assetUrl = ref => {
 // ImageBitmap, not <img>.decode(): decode() never settles while the tab is hidden, and renders run in background tabs.
 const loadImage = async src => createImageBitmap(await (await fetch(src)).blob(), { premultiplyAlpha: 'none', colorSpaceConversion: 'none' });
 /** Parts of the look the editor can turn off in its viewport (all on for renders). */
-export const SHOW = { haze: true, dof: true, lens: true, glows: true, ghosts: true, pops: true, shafts: false, softShadows: false, contact: false };
+export const SHOW = { haze: true, dof: true, lens: true, glows: true, ghosts: true, pops: true, shafts: false, softShadows: false, contact: false, hazeShadow: false };
 /** The shadow toggles (research): off by default; renders to disk follow the viewport's choice. */
-export const SHADOW_KEYS = ['shafts', 'softShadows', 'contact'];
+export const SHADOW_KEYS = ['shafts', 'softShadows', 'contact', 'hazeShadow'];
 /** Forward, right and up of an evaluated camera (eye, target, up). */
 const camBasis = c => {
   const f = nrm(c.target.map((v, i) => v - c.eye[i])), rr = nrm([f[1] * c.up[2] - f[2] * c.up[1], f[2] * c.up[0] - f[0] * c.up[2], f[0] * c.up[1] - f[1] * c.up[0]]);
@@ -172,7 +173,8 @@ export class ShotRenderer {
       this.emitFlat = flatScreenQuad(Fn(() => crtColor(vec2(ub[0], ub[1]).add(uv().mul(vec2(ub[2] - ub[0], ub[3] - ub[1])))))());
       this.emitAvg = makeEmitAverage({ hiTex: this.emitHiRT.texture, gx, gy });
       this.emitAvg.U.screenLight.value = HZ.screenLight ?? 100;
-      this.haze = makeHaze({ distTex: this.sceneRT.textures[1], emitTex: this.emitRT.texture, look: HZ, shadows: this.shadows, ringShadows: this.ringShadows });
+      this.hazeShadow = makeHazeShadow({ hazeU: () => this.haze.U, look: HZ });
+      this.haze = makeHaze({ distTex: this.sceneRT.textures[1], emitTex: this.emitRT.texture, look: HZ, shadows: this.shadows, ringShadows: this.ringShadows, selfShadow: this.hazeShadow });
       this.meterRT = rt(480, 270, { type: THREE.FloatType });
       this.meter = makeHazeMeter({ hazeTex: this.hazeRT.texture });
     }
@@ -195,7 +197,7 @@ export class ShotRenderer {
    *  The picture is the same as render()'s. opts.show turns parts of the look off in the viewport (see SHOW). */
   *renderSteps(st, opts = {}) {
     const r = this.renderer, final = opts.final !== false, show = { ...SHOW, ...opts.show }, n = Math.max(1, opts.slices || 1);
-    this.quality = opts.quality || 'render';
+    this.quality = opts.quality || 'render'; this.show = show;
     if (st.cut) { r.setRenderTarget(this.finalRT); r.clear(); r.setRenderTarget(null); r.clear(); return; }
     if (!show.lens) st = { ...st, camera: { ...st.camera, k: 0, ov: 1, fovRender: st.camera.fov } };
     const hazeOn = !!(final && this.haze && show.haze && opts.haze !== false && st.haze && st.haze.gain > 0 && !st.flat.before);
@@ -252,6 +254,9 @@ export class ShotRenderer {
     H.stepLen.value = (HZ.stepLen ?? 0.015) * (play ? (PQ.stepScale ?? 3) : 1);
     const hw = Math.round(this.sceneRT.width * res), hh = Math.round(this.sceneRT.height * res);
     if (this.hazeRT.width !== hw || this.hazeRT.height !== hh) this.hazeRT.setSize(hw, hh);
+    // haze self-shadowing (Show menu, off by default): this frame's density and light-transmittance volumes
+    const SS = this.hazeShadow, ssOn = !!this.show?.hazeShadow; SS.U.on.value = ssOn ? 1 : 0;
+    if (ssOn) SS.update(r, { gm, ringPos: R ? R.pos : null, mark: n => this.mark(n) });
   }
 
   /** Mean luminance of this frame's lens-warped, ungained haze (call after render()). */
