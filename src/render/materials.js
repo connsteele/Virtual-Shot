@@ -1,7 +1,7 @@
 // TSL materials: the Black Page engine's GLSL rewritten as three.js node graphs (WebGPU first, WebGL2 fallback).
 import * as THREE from 'three/webgpu';
 import { Fn, uniform, uniformArray, texture, uv, vec2, vec3, vec4, float, mix, clamp, max, min, dot, normalize, length, exp, sin, abs, pow,
-  positionWorld, normalWorldGeometry, If, Discard, select, mrt, dFdx, dFdy, log2 } from 'three/tsl';
+  positionWorld, normalWorldGeometry, If, Discard, select, mrt, dFdx, dFdy, log2, exp2, round } from 'three/tsl';
 
 /** smoothstep that also works with edge0 > edge1 (GLSL drivers allow it; WGSL's builtin does not promise it). */
 export const sstep = (e0, e1, x) => { const t = clamp(float(x).sub(e0).div(float(e1).sub(e0)), 0, 1); return t.mul(t).mul(float(3).sub(t.mul(2))); };
@@ -13,6 +13,7 @@ export function makeLightUniforms() {
     lp: uniform(new THREE.Vector3()), lpRaw: uniform(new THREE.Vector3()), lc: uniform(new THREE.Vector3()), li: uniform(0), lrad: uniform(0.01),
     amb: uniform(0), si: uniform(4.5), bp: uniform(new THREE.Vector3()), bi: uniform(0), bl: uniform(1),
     rp: uniform(new THREE.Vector3()), rc: uniform(new THREE.Vector3()), ri: uniform(0), rrad: uniform(1), eStr: uniform(0),
+    bands: uniform(0),   // > 0: banded lighting (pixel look), that many steps per doubling of each light's falloff
   };
 }
 
@@ -30,21 +31,23 @@ export function bodyMaterial(U, { map = null, emissiveMap = null, ledRect = [2, 
     const Lv = U.sp.sub(P), d = length(Lv), L = Lv.div(d);
     const lobe = clamp(dot(L.negate(), U.sn).mul(0.7).add(0.3), 0, 1);
     const face = max(dot(n, L).mul(0.85).add(0.15), 0).mul(lobe);
-    const spill = face.mul(U.si).div(d.mul(d).mul(5).add(1));
+    // banded lighting: each light's falloff snapped to steps of equal ratio, so it lands in hard-edged tones
+    const band = x => select(U.bands.greaterThan(0), exp2(round(log2(max(x, 1e-6)).mul(U.bands)).div(max(U.bands, 1))), x);
+    const spill = band(face.mul(U.si).div(d.mul(d).mul(5).add(1)));
     const fill = U.amb.mul(float(0.5).add(max(dot(n, normalize(vec3(-0.4, 0.8, 0.3))), 0).mul(0.5)));
     const Lb0 = U.bp.sub(P), db = length(Lb0), Lb = Lb0.div(max(db, 1e-5));
-    const bnc = U.bi.mul(max(dot(n, Lb), 0)).div(db.mul(db).mul(1.5).add(1));
+    const bnc = band(U.bi.mul(max(dot(n, Lb), 0)).div(db.mul(db).mul(1.5).add(1)));
     const sc = scMul === 1 ? U.sc : U.sc.mul(scMul), bl = blMul === 1 ? U.bl : U.bl.mul(blMul);
     const col = c.rgb.mul(fill.add(sc.mul(spill.add(bnc)))).mul(bl).toVar();
     // power LED: teal spill on the plastic, and the LED texel itself glows
     const lp = rawLed ? U.lpRaw : U.lp, dl = lp.sub(P), dd = length(dl);
-    col.addAssign(c.rgb.mul(U.lc).mul(U.li).mul(0.9).mul(exp(dd.mul(dd).negate().div(U.lrad.mul(U.lrad)))).mul(max(dot(n, dl.div(max(dd, 1e-5))), 0.25)));
+    col.addAssign(c.rgb.mul(U.lc).mul(U.li).mul(0.9).mul(band(exp(dd.mul(dd).negate().div(U.lrad.mul(U.lrad))).mul(max(dot(n, dl.div(max(dd, 1e-5))), 0.25)))));
     const inRect = v.x.greaterThan(lr.x).and(v.x.lessThan(lr.z)).and(v.y.greaterThan(lr.y)).and(v.y.lessThan(lr.w));
     If(inRect, () => { col.assign(mix(col, U.lc.mul(1.15).add(0.12), min(U.li, 1).mul(0.9))); });
     if (emissiveMap) col.addAssign(texture(emissiveMap, v).rgb.mul(U.eStr));
     // the ringing remote lights what's around it
     const rl = U.rp.sub(P), rd = length(rl);
-    col.addAssign(c.rgb.mul(U.rc).mul(U.ri).mul(exp(rd.mul(rd).negate().div(U.rrad.mul(U.rrad)))).mul(max(dot(n, rl.div(max(rd, 1e-5))), 0.2)));
+    col.addAssign(c.rgb.mul(U.rc).mul(U.ri).mul(band(exp(rd.mul(rd).negate().div(U.rrad.mul(U.rrad))).mul(max(dot(n, rl.div(max(rd, 1e-5))), 0.2)))));
     const out = ov ? mix(col, ov.xyz, ov.w) : col;
     return vec4(out, 1);
   })();

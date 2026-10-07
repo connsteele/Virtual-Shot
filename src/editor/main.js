@@ -55,7 +55,7 @@ async function boot() {
   window.VS = { perf: { report: () => E.perf.report(), on: v => E.perf.toggle(v !== false) }, E, cmd: (n, a) => E.cmd.run(n, a), commands: () => E.cmd.list(), evaluate: t => evaluate(E.doc, t, shot.geo, E.ix) };
 
   // ---- viewport visibility (Blender's eye toggles and overlays, Unreal's Show menu): editor-only, kept in this browser
-  E.show = { ...SHOW, pixels: false, pixLines: 480, pixBits: 6, pixAA: false, pixScreen: 1080, safe: true, grid: true, frustum: true, hazeBox: true, lights: true, bounds: true };
+  E.show = { ...SHOW, pixels: false, pixLines: 480, pixBits: 6, pixAA: false, pixScreen: 1080, pixOutlines: false, pixBands: 0, pixBloom: 0, pixStable: false, safe: true, grid: true, frustum: true, hazeBox: true, lights: true, bounds: true };
   E.hidden = new Set(); E.refineMode = 'idle'; E.fpsCap = { camera: 0, free: 0 };   // 0 = the display's rate
   const viewKey = 'vs-editor-view:' + doc.name;
   try { const v = JSON.parse(localStorage.getItem(viewKey) || 'null');
@@ -64,7 +64,8 @@ async function boot() {
   E.keepView = keepView;
   // the chunky-pixel look is a renderer setting (it changes the canvas size), and renders to disk use it too
   const applyPixels = () => { const S = E.show;
-    shot.setPixelLook(S.pixels ? { ...PIXEL_LOOK, lines: +S.pixLines, bits: +S.pixBits, msaa: !!S.pixAA, sharpScreen: S.pixScreen === 'full' ? true : +S.pixScreen } : null); };
+    shot.setPixelLook(S.pixels ? { ...PIXEL_LOOK, lines: +S.pixLines, bits: +S.pixBits, msaa: !!S.pixAA, sharpScreen: S.pixScreen === 'full' ? true : +S.pixScreen,
+      outlines: !!S.pixOutlines, bands: +S.pixBands, bloom: +S.pixBloom, stable: !!S.pixStable } : null); };
   if (E.show.pixels) applyPixels();
   E.setShow = (k, on) => { E.show[k] = on; if (k.startsWith('pix')) applyPixels(); keepView(); E.emit('show'); E.requestRender(); };
   E.setHidden = (id, hide) => { hide ? E.hidden.add(id) : E.hidden.delete(id); keepView(); E.emit('show'); E.requestRender(); };

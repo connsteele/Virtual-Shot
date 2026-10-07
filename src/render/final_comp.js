@@ -89,12 +89,13 @@ export const flatScreenQuad = node => new THREE.QuadMesh(quadMat(node));
  *    colour its source pixel was drawn with: the chunky frame keeps its haze, light and blocky screen edge (the mask is
  *    the scene buffer's screen flag, at the internal size), and the text gets its fine detail back. Faded out where the
  *    screen is out of focus or under the pops, and before the 3D starts. */
-export function makeAreaUpscale({ srcTex, distTex, cocTex, popsTex, crtColor }) {
+export function makeAreaUpscale({ srcTex, distTex, cocTex, popsTex, crtColor, bloomTex }) {
   const v3u = () => uniform(new THREE.Vector3());
   const U = { src: uniform(new THREE.Vector2(854, 480)), dst: uniform(new THREE.Vector2(3840, 2160)), levels: uniform(0),
     detail: uniform(0), k: uniform(0), aspect: uniform(16 / 9), tanY: uniform(0.27), eye: v3u(), cf: v3u(), cr: v3u(), cu: v3u(),
-    g00: v3u(), gn: v3u(), da: v3u(), db: v3u(), ub: uniform(new THREE.Vector4(0, 0, 1, 1)), popsOn: uniform(0), scrLines: uniform(0) };
-  const src = texture(srcTex), dist = texture(distTex), coc = texture(cocTex), pops = texture(popsTex);
+    g00: v3u(), gn: v3u(), da: v3u(), db: v3u(), ub: uniform(new THREE.Vector4(0, 0, 1, 1)), popsOn: uniform(0), scrLines: uniform(0),
+    bloom: uniform(0), off: uniform(new THREE.Vector2(0, 0)) };
+  const src = texture(srcTex), dist = texture(distTex), coc = texture(cocTex), pops = texture(popsTex), bloom = texture(bloomTex);
   // 4x4 Bayer threshold in [0, 1) for integer texel coordinates
   const bayer2 = a => a.x.mul(0.5).add(a.y.mul(a.y).mul(0.75)).fract();
   const bayer4 = a => bayer2(floor(a.mul(0.5))).mul(0.25).add(bayer2(a));
@@ -114,18 +115,21 @@ export function makeAreaUpscale({ srcTex, distTex, cocTex, popsTex, crtColor }) 
   const screenLin = (m, lodBias, dm) => srgbToLinear(crtColor(m, lodBias, dm).rgb);
   const node = Fn(() => {
     const q = uv(), s = U.src.div(U.dst), p = q.mul(U.dst);        // output pixel centre, in output pixels
-    const a = p.sub(0.5).mul(s), b = p.add(0.5).mul(s);              // its footprint, in source texels
+    // its footprint, in source texels; U.off: the pixel-stable camera's sub-pixel remainder (the snapped render, moved back)
+    const a = p.sub(0.5).mul(s).add(U.off), b = p.add(0.5).mul(s).add(U.off);
     const i0 = floor(a), w = clamp(i0.add(1).sub(a).div(b.sub(a)), 0, 1);   // share of the footprint on texel i0
-    const t = (x, y) => { const ti = i0.add(vec2(x, y)), c = src.sample(ti.add(0.5).div(U.src)).level(0).rgb;
+    const t = (x, y) => { const ti = i0.add(vec2(x, y)), tq = ti.add(0.5).div(U.src);
+      const c = src.sample(tq).level(0).rgb.add(bloom.sample(tq).level(0).rgb.mul(U.bloom));   // bloom joins the frame buffer, before the dither
       const L = max(U.levels, 1);
       return select(U.levels.greaterThan(0.5), min(floor(c.mul(L).add(bayer4(ti))).div(L), vec3(1)), c); };
     const up = mix(mix(t(1, 1), t(0, 1), w.x), mix(t(1, 0), t(0, 0), w.x), w.y);
     // sharp screen: swap the source pixel's screen colour for this output pixel's. The source pixel's is re-evaluated as
     // the internal render drew it (at its centre, with the chat's mip level of a source-sized footprint), so what's
     // taken out matches what's there and no blocky ghost of the text is left behind.
-    const m = meshUV(q), lo = screenLin(meshUV(floor(q.mul(U.src)).add(0.5).div(U.src)), log2(U.dst.y.div(U.src.y)), m);
-    const onScreen = dist.sample(warp(q)).level(0).g.greaterThan(1.5);
-    const focus = float(1).sub(smoothstep(1, 3, abs(coc.sample(q).level(0).r)));
+    const m = meshUV(q), lo = screenLin(meshUV(floor(q.mul(U.src).add(U.off)).add(0.5).sub(U.off).div(U.src)), log2(U.dst.y.div(U.src.y)), m);
+    const qs = q.add(U.off.div(U.src));   // where this pixel is in the (snapped) internal frame
+    const onScreen = dist.sample(warp(qs)).level(0).g.greaterThan(1.5);
+    const focus = float(1).sub(smoothstep(1, 3, abs(coc.sample(qs).level(0).r)));
     const wd = select(onScreen, focus, float(0)).mul(U.detail).mul(float(1).sub(pops.sample(q).level(0).a.mul(U.popsOn)));
     // the screen's own pixel grid: U.scrLines lines (a sharper but still pixelated screen), or the output's
     const R = select(U.scrLines.greaterThan(0), vec2(U.scrLines.mul(U.dst.x.div(U.dst.y)), U.scrLines), U.dst);
@@ -134,4 +138,27 @@ export function makeAreaUpscale({ srcTex, distTex, cocTex, popsTex, crtColor }) 
     return vec4(select(U.detail.greaterThan(0), linearToSrgb(clamp(lin, 0, 1)), up), 1);
   })();
   return { U, quad: new THREE.QuadMesh(quadMat(node)) };
+}
+
+/** Wii-era bloom (Twilight Princess, Mario Galaxy): the bright parts of the internal frame, averaged down to a quarter
+ *  size, blurred wide, and added back into the internal frame by the upscale (U.bloom), so it is chunky and dithered with
+ *  everything else. Passes: bright (src -> a), blur x (a -> b), blur y (b -> a). Display values, like those games. */
+export function makeBloom({ srcTex, aTex, bTex }) {
+  const U = { srcPx: uniform(new THREE.Vector2(1 / 854, 1 / 480)), px: uniform(new THREE.Vector2(1 / 214, 1 / 120)), threshold: uniform(0.2) };
+  const src = texture(srcTex), A = texture(aTex), B = texture(bTex);
+  const bright = Fn(() => {
+    const q = uv(), acc = vec3(0).toVar();
+    for (let j = 0; j < 4; j++) for (let i = 0; i < 4; i++) {
+      const c = src.sample(q.add(U.srcPx.mul(vec2(i - 1.5, j - 1.5)))).level(0).rgb;
+      acc.addAssign(max(c.sub(U.threshold), vec3(0)).div(float(1).sub(U.threshold)));
+    }
+    return vec4(acc.div(16), 1);
+  })();
+  const W = [0.1585, 0.1465, 0.1157, 0.0782, 0.0452, 0.0224, 0.0095];   // gaussian, sigma 3.3 texels, 13 taps
+  const blur = (T, dir) => Fn(() => {
+    const q = uv(), acc = T.sample(q).level(0).rgb.mul(W[0]).toVar();
+    for (let i = 1; i < W.length; i++) { const o = U.px.mul(dir).mul(i); acc.addAssign(T.sample(q.add(o)).level(0).rgb.add(T.sample(q.sub(o)).level(0).rgb).mul(W[i])); }
+    return vec4(acc.div(0.9935), 1);
+  })();
+  return { U, quads: { bright: new THREE.QuadMesh(quadMat(bright)), blurX: new THREE.QuadMesh(quadMat(blur(A, vec2(1, 0)))), blurY: new THREE.QuadMesh(quadMat(blur(B, vec2(0, 1)))) } };
 }

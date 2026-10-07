@@ -112,7 +112,11 @@ export class Viewport {
         ${pick('pixLines', 'Lines', [[480, '480'], [360, '360'], [240, '240']])}
         ${pick('pixBits', 'Colour', [[0, '24-bit'], [6, '18-bit, dithered'], [5, '15-bit, dithered']])}
         ${pick('pixScreen', 'Screen text', [[0, 'Chunky'], [1080, 'Sharp, 1080 lines'], ['full', 'Sharp, 4K']])}
-        ${item('pixAA', 'Anti-aliasing (4× MSAA)')}</div>
+        ${item('pixAA', 'Anti-aliasing (4× MSAA)')}
+        ${item('pixOutlines', 'Pixel outlines')}
+        ${pick('pixBands', 'Lighting', [[0, 'Smooth'], [1, 'Banded, wide steps'], [2, 'Banded, fine steps']])}
+        ${pick('pixBloom', 'Bloom (Wii)', [[0, 'Off'], [0.5, 'Soft'], [1, 'Strong']])}
+        ${item('pixStable', 'Pixel-stable camera', 'experimental')}</div>
       <div class="menu-group"><div class="menu-head">Overlays</div>
         ${item('safe', 'Safe frames', 'camera')}${item('grid', 'Grid', 'free')}${item('frustum', 'Shot camera', 'free')}${item('hazeBox', 'Haze bounds', 'free')}
         ${item('lights', 'Lights and glass axes', 'free')}${item('bounds', 'Selection bounds', 'free')}</div>
@@ -129,7 +133,7 @@ export class Viewport {
     const sync = () => {
       pop.querySelectorAll('[data-show]').forEach(i => { i.checked = !!E.show[i.dataset.show]; });
       pop.querySelectorAll('[data-pick]').forEach(i => { i.value = String(E.show[i.dataset.pick]); i.disabled = !E.show.pixels; });
-      pop.querySelector('[data-show="pixAA"]').disabled = !E.show.pixels;
+      for (const k of ['pixAA', 'pixOutlines', 'pixStable']) pop.querySelector(`[data-show="${k}"]`).disabled = !E.show.pixels;
       const off = ['haze', 'dof', 'lens', 'glows', 'ghosts', 'pops'].filter(k => !E.show[k]).length;
       btn.textContent = off ? `Show (${off} off) ▾` : 'Show ▾'; sel.value = E.refineMode; fps.value = String(E.fpsCap[E.view] || 0);
       const n = E.hidden.size, h = document.getElementById('hiddenNote');

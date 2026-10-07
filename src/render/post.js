@@ -15,9 +15,9 @@ export function makePost(tex) {
     k: uniform(0), aspect: uniform(16 / 9), sq: uniform(0),
     fD: uniform(0), ppd: uniform(0), band: uniform(0), maxc: uniform(0), edge: uniform(0), es: uniform(1),
     sp: uniform(new THREE.Vector2(.5, .5)), spot: uniform(0), spr: uniform(1), spf: uniform(1),
-    px: uniform(new THREE.Vector2(1 / 1920, 1 / 1080)), sc: uniform(1), maxR: uniform(0), rs: uniform(0.5),
+    px: uniform(new THREE.Vector2(1 / 1920, 1 / 1080)), sc: uniform(1), maxR: uniform(0), rs: uniform(0.5), alt: uniform(0),
   };
-  const srcNode = texture(tex.src), zsNode = texture(tex.zs), lensSrc = texture(tex.lens), cocSrc = texture(tex.coc), finalSrc = texture(tex.final);
+  const altNode = texture(tex.alt || tex.src), srcNode = texture(tex.src), zsNode = texture(tex.zs), lensSrc = texture(tex.lens), cocSrc = texture(tex.coc), finalSrc = texture(tex.final);
 
   const warp = (q, kk) => {
     const p0 = q.mul(2).sub(1), p = vec2(p0.x.mul(U.aspect), p0.y);
@@ -29,10 +29,12 @@ export function makePost(tex) {
   // lens: barrel warp, edge colour fringing, vignette, squint lids
   const lens = quadMat(Fn(() => {
     const q = uv();
-    const flat = srcNode.sample(q);
-    const g = srcNode.sample(warp(q, U.k));
+    // U.alt = 1: read the outlined copy of the scene (pixel look) instead of the scene buffer
+    const S = qq => select(U.alt.greaterThan(0.5), altNode.sample(qq), srcNode.sample(qq));
+    const flat = S(q);
+    const g = S(warp(q, U.k));
     const p0 = q.mul(2).sub(1), edge = clamp(dot(p0, p0).mul(0.5), 0, 1);
-    const r = srcNode.sample(warp(q, U.k.mul(edge.mul(0.03).add(1)))).r, b = srcNode.sample(warp(q, U.k.mul(float(1).sub(edge.mul(0.03))))).b;
+    const r = S(warp(q, U.k.mul(edge.mul(0.03).add(1)))).r, b = S(warp(q, U.k.mul(float(1).sub(edge.mul(0.03))))).b;
     const p = vec2(p0.x.mul(U.aspect), p0.y), e = dot(p, p).div(U.aspect.mul(U.aspect).add(1));
     const v0 = float(1).sub(min(U.k.mul(3), 1).mul(0.5).mul(smoothstep(0.15, 1, e)));
     const ly = abs(q.y.mul(2).sub(1)).add(pow(abs(q.x.mul(2).sub(1)), 2).mul(0.18));
@@ -79,4 +81,24 @@ export function makePost(tex) {
 
   return { U,
     quads: { lens: new THREE.QuadMesh(lens), coc: new THREE.QuadMesh(coc), dof: new THREE.QuadMesh(dof), blit: new THREE.QuadMesh(blit) } };
+}
+
+/** Pixel outlines for the chunky-pixel look, after t3ssel8r's pixel-art 3D: on the scene buffer (internal size, before the
+ *  lens), a pixel in front of a neighbour that is clearly farther is a silhouette and is darkened; a pixel nearer than its
+ *  neighbours' mean (a convex crease: box edges, key rims, the bezel) is lightened. Both from the distance pass alone. */
+export function makeOutline({ colorTex, distTex }) {
+  const U = { px: uniform(new THREE.Vector2(1 / 854, 1 / 480)), edge: uniform(0.04), crease: uniform(0.002), dark: uniform(0.6), light: uniform(0.7) };
+  const col = texture(colorTex), dist = texture(distTex);
+  const D = q => { const z = dist.sample(q).level(0), r = z.r.div(max(z.g, 1)); return select(r.lessThanEqual(0), float(1e3), r); };
+  const node = Fn(() => {
+    const q = uv(), c = col.sample(q).level(0), d = D(q);
+    const n = [[1, 0], [-1, 0], [0, 1], [0, -1]].map(([x, y]) => D(q.add(U.px.mul(vec2(x, y)))));
+    const far = max(max(n[0], n[1]), max(n[2], n[3])).sub(d);
+    const lap = n[0].add(n[1]).add(n[2]).add(n[3]).mul(0.25).sub(d);
+    const sil = far.greaterThan(d.mul(U.edge)).and(d.lessThan(100));
+    const ridge = lap.greaterThan(d.mul(U.crease)).and(d.lessThan(100));
+    const rgb = select(sil, c.rgb.mul(float(1).sub(U.dark)), select(ridge, c.rgb.mul(U.light.add(1)).add(U.light.mul(0.07)), c.rgb));
+    return vec4(rgb, c.a);
+  })();
+  return { U, quad: new THREE.QuadMesh(quadMat(node)) };
 }

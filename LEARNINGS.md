@@ -589,6 +589,22 @@ load (three's `compileAsync` covers scene materials but not full-screen passes).
   sparkle at 480.
 - GPU (headless, f420, Play quality): pixel look total is lower than the normal look (haze march 4.8 vs 11.7 ms, DOF
   0.4 vs 4.3 ms); the upscale is 0.8 ms, 0.9 ms with the sharp screen.
+- **v3** (frames: `chunky_pixels_v3\compare_2x2\`), all toggles under Chunky pixels, off by default:
+  - Pixel outlines (`makeOutline`, post.js): from the distance pass alone, before the lens. Silhouettes (a neighbour
+    farther by > 4%) darken, convex creases (nearer than the neighbours' mean by > 0.2%) lighten. In this dark scene
+    darkened silhouettes barely show against black; the crease highlights (keys, bezel, stand) carry the look.
+  - Banded lighting (`U.bands` in bodyMaterial): each light's falloff (screen spill, bounce, LED, ring) snapped to steps
+    of equal ratio, 1 or 2 per doubling, so falloff lands in hard-edged tones.
+  - Wii bloom (`makeBloom`): bright pass (threshold 0.2, display values) at quarter size, 13-tap gaussian each way,
+    added into the internal frame in the upscale before the dither, so it is chunky and dithered like the rest. A 0.45
+    threshold showed almost nothing here: the brightest things are the chat text and the LED.
+  - Pixel-stable camera (`snapCamera`): snaps the camera to whole internal pixels at the target distance and shifts the
+    picture back by the remainder. It made things worse on this shot (frame-to-frame change in the internal frame
+    1.73 vs 1.35, f440–470): the moves are pushes, FOV changes and lens warp, which translation snapping can't hold
+    still. It's for orthographic or pan-only cameras; kept as an experimental toggle. It also moves the pops by the
+    sub-pixel remainder.
+- The default look is unchanged by all of this: frames 120/300/720/1100 are bit-identical to before the pixel look
+  (PSNR infinite).
 
 ## Running the spike
 

@@ -4,9 +4,9 @@ import * as THREE from 'three/webgpu';
 import { mrt, output, vec2, vec4, positionWorld, cameraPosition, uniform, uv, Fn } from 'three/tsl';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { bodyMaterial, crtMaterial, glowMaterial, makeLightUniforms } from './materials.js';
-import { makePost } from './post.js';
+import { makePost, makeOutline } from './post.js';
 import { makeHaze } from './haze.js';
-import { makeComposite, makeHazeMeter, makeEmitAverage, makeAreaUpscale, flatScreenQuad } from './final_comp.js';
+import { makeComposite, makeHazeMeter, makeEmitAverage, makeAreaUpscale, makeBloom, flatScreenQuad } from './final_comp.js';
 import { indexDoc } from '../core/evaluate.js';
 import { add, scl, xf, nrm, trsOf } from '../core/vec.js';
 
@@ -24,10 +24,11 @@ const loadImage = async src => createImageBitmap(await (await fetch(src)).blob()
 export const SHOW = { haze: true, dof: true, lens: true, glows: true, ghosts: true, pops: true };
 /** The chunky-pixel look (off by default): the whole frame (3D, lens, depth of field, haze, 2D layers) is rendered at a
  *  480-line internal size, as an emulator renders a Wii game at native resolution, then area-upscaled to the output. */
-export const PIXEL_LOOK = { lines: 480, output: [3840, 2160], msaa: false, bits: 6, sharpScreen: 1080 };
+export const PIXEL_LOOK = { lines: 480, output: [3840, 2160], msaa: false, bits: 6, sharpScreen: 1080, outlines: false, stable: false, bands: 0, bloom: 0 };
 // Options: lines (internal height), msaa (keep the 4x MSAA, softer edges), bits (0 = 24-bit colour; 6 or 5 = that many bits
 // per channel with an ordered dither), sharpScreen (the CRT's picture over the chunky frame at output resolution, true, or
-// at that many lines, e.g. 1080).
+// at that many lines, e.g. 1080), outlines (pixel outlines on silhouettes and creases), stable (pixel-stable camera),
+// bands (banded lighting, steps per doubling; 0 = smooth), bloom (Wii-era bloom strength; 0 = none).
 const m4 = a => new THREE.Matrix4().fromArray(Array.from(a));
 const v3 = a => new THREE.Vector3(...a);
 
@@ -47,10 +48,13 @@ export class ShotRenderer {
     this.pixel = look ? { ...PIXEL_LOOK, ...look, lines: h, output: [ow, oh] } : null;
     this.W = w; this.H = h; this.OW = ow; this.OH = oh;
     for (const t of [this.lensRT, this.cocRT, this.finalRT, this.pixelRT]) t.setSize(w, h);
+    const bw = Math.ceil(w / 4), bh = Math.ceil(h / 4); this.bloomA.setSize(bw, bh); this.bloomB.setSize(bw, bh);
+    this.bloom.U.srcPx.value.set(1 / w, 1 / h); this.bloom.U.px.value.set(1 / bw, 1 / bh);
     const P = this.pixel, UU = this.upscale.U;
     UU.src.value.set(w, h); UU.dst.value.set(ow, oh); UU.levels.value = P && P.bits ? 2 ** P.bits - 1 : 0; UU.detail.value = P && P.sharpScreen ? 1 : 0; UU.scrLines.value = P && typeof P.sharpScreen === 'number' ? P.sharpScreen : 0;
     this.sceneRT.samples = P && !P.msaa ? 0 : 4;
-    this.screenFlag.value = P ? 1 : 0;
+    this.screenFlag.value = P ? 1 : 0; this.U.bands.value = P ? P.bands || 0 : 0; UU.bloom.value = P ? P.bloom || 0 : 0;
+    if (!P || !P.stable) UU.off.value.set(0, 0);
     // the chat on the screen: filtered by its footprint (mipmaps) in the pixel look, the engine's single taps otherwise
     const mip = !!P, ct = this.chatTex;
     if (ct.generateMipmaps !== mip) { Object.assign(ct, { generateMipmaps: mip, minFilter: mip ? THREE.LinearMipmapLinearFilter : THREE.LinearFilter }); ct.dispose(); ct.needsUpdate = true; }
@@ -174,7 +178,9 @@ export class ShotRenderer {
     // Blending for MRT targets is read from the renderer-level MRT (not the material's mrtNode): 'dist' follows each
     // material, so opaque surfaces overwrite it and the additive glows (which output dist 0) leave it untouched.
     this.sceneMRT = mrt({ output, dist: vec4(positionWorld.distance(cameraPosition), 1, 0, 1) }).setBlendMode('dist', new THREE.BlendMode(THREE.MaterialBlending));
-    this.post = makePost({ src: this.sceneRT.textures[0], zs: this.sceneRT.textures[1], lens: this.lensRT.texture, coc: this.cocRT.texture, final: this.finalRT.texture });
+    this.outlineRT = rt(this.W, this.H, { minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter });
+    this.outline = makeOutline({ colorTex: this.sceneRT.textures[0], distTex: this.sceneRT.textures[1] });
+    this.post = makePost({ src: this.sceneRT.textures[0], alt: this.outlineRT.texture, zs: this.sceneRT.textures[1], lens: this.lensRT.texture, coc: this.cocRT.texture, final: this.finalRT.texture });
 
     // final look: haze, layers and the composite (doc.look.haze, doc.layers)
     const tex2d = c => { const t = new THREE.CanvasTexture(c || document.createElement('canvas'));
@@ -197,8 +203,10 @@ export class ShotRenderer {
     this.comp = makeComposite({ engineTex: this.finalRT.texture, flatTex: this.flatTex, popsTex: this.popsTex, hazeTex: this.hazeRT.texture });
     // pixel look: the composite goes to this internal-size buffer, then is area-upscaled to the canvas
     this.pixelRT = rt(this.W, this.H, { minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter });
+    this.bloomA = rt(this.W / 4, this.H / 4); this.bloomB = rt(this.W / 4, this.H / 4);
+    this.bloom = makeBloom({ srcTex: this.pixelRT.texture, aTex: this.bloomA.texture, bTex: this.bloomB.texture });
     this.upscale = makeAreaUpscale({ srcTex: this.pixelRT.texture, distTex: this.sceneRT.textures[1], cocTex: this.cocRT.texture,
-      popsTex: this.popsTex, crtColor: this.crt.userData.color });
+      popsTex: this.popsTex, crtColor: this.crt.userData.color, bloomTex: this.bloomA.texture });
     { const gm = this.glassMap, dotp = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2], uu = dotp(gm.eu, gm.eu), uv_ = dotp(gm.eu, gm.ev), vv = dotp(gm.ev, gm.ev), det = uu * vv - uv_ * uv_;
       // dual basis of the glass plane: rel . da = a, rel . db = b for rel = a eu + b ev
       const da = gm.eu.map((x, c) => (vv * x - uv_ * gm.ev[c]) / det), db = gm.ev.map((x, c) => (uu * x - uv_ * gm.eu[c]) / det), UU = this.upscale.U;
@@ -225,6 +233,8 @@ export class ShotRenderer {
     if (st.cut) { r.setRenderTarget(this.finalRT); r.clear(); r.setRenderTarget(null); r.clear(); return; }
     const pixel = !!this.pixel;
     if (!show.lens) st = { ...st, camera: { ...st.camera, k: 0, ov: 1, fovRender: st.camera.fov } };
+    const cTrue = st.camera;   // the pixel-stable camera renders from a snapped one; the upscale moves the picture back
+    if (pixel && this.pixel.stable) { const s = this.snapCamera(cTrue); st = { ...st, camera: s.camera }; this.upscale.U.off.value.set(...s.off); }
     const hazeOn = !!(final && this.haze && show.haze && opts.haze !== false && st.haze && st.haze.gain > 0 && !st.flat.before);
     if (!st.flat.before) {
       this.render3D(st, show, opts.upload);
@@ -244,10 +254,11 @@ export class ShotRenderer {
     C.blur.value = this.quality === 'play' ? 1.0 / this.hazeRT.width : 0;
     this.mark('composite'); r.setRenderTarget(pixel ? this.pixelRT : null); this.comp.quad.render(r);
     if (pixel) {
-      const UU = this.upscale.U, f = nrm(c.target.map((v, i) => v - c.eye[i])), rr = nrm([f[1] * c.up[2] - f[2] * c.up[1], f[2] * c.up[0] - f[0] * c.up[2], f[0] * c.up[1] - f[1] * c.up[0]]);
+      const c = cTrue, B = this.bloom, UU = this.upscale.U, f = nrm(c.target.map((v, i) => v - c.eye[i])), rr = nrm([f[1] * c.up[2] - f[2] * c.up[1], f[2] * c.up[0] - f[0] * c.up[2], f[0] * c.up[1] - f[1] * c.up[0]]);
       UU.eye.value.set(...c.eye); UU.cf.value.set(...f); UU.cr.value.set(...rr); UU.cu.value.set(rr[1] * f[2] - rr[2] * f[1], rr[2] * f[0] - rr[0] * f[2], rr[0] * f[1] - rr[1] * f[0]);
       UU.tanY.value = Math.tan(c.fovRender * Math.PI / 360); UU.aspect.value = this.W / this.H; UU.k.value = c.k;
       UU.popsOn.value = C.popsOn.value; UU.detail.value = this.pixel.sharpScreen && !st.flat.before ? 1 - st.flat.overlay : 0;
+      if (UU.bloom.value > 0) { this.mark('bloom'); r.setRenderTarget(this.bloomA); B.quads.bright.render(r); r.setRenderTarget(this.bloomB); B.quads.blurX.render(r); r.setRenderTarget(this.bloomA); B.quads.blurY.render(r); }
       this.mark('area upscale'); r.setRenderTarget(null); this.upscale.quad.render(r);
     }
   }
@@ -340,10 +351,26 @@ export class ShotRenderer {
     P.k.value = c.k; P.aspect.value = this.W / this.H; P.sq.value = c.squint;
     P.fD.value = D ? F.D : 0; P.ppd.value = D ? F.px : 0; P.band.value = D ? F.band : 0; P.maxc.value = D ? F.max : 0; P.edge.value = D ? F.edge : 0; P.es.value = D ? F.es : 1;
     P.sp.value.set(D ? F.sp[0] : .5, D ? 1 - F.sp[1] : .5); P.spot.value = D ? F.spot : 0; P.spr.value = D ? F.spotR : 1; P.spf.value = D ? F.spotF : 1;
+    const outl = !!this.pixel?.outlines; P.alt.value = outl ? 1 : 0;
+    if (outl) { const O = this.outline; if (this.outlineRT.width !== sw || this.outlineRT.height !== sh) this.outlineRT.setSize(sw, sh);
+      O.U.px.value.set(1 / sw, 1 / sh); this.mark('outlines'); r.setRenderTarget(this.outlineRT); O.quad.render(r); }
     this.mark('lens'); r.setRenderTarget(this.lensRT); post.quads.lens.render(r);
     this.mark('focus (CoC)'); r.setRenderTarget(this.cocRT); post.quads.coc.render(r);
     const sc = this.H / 1080; P.px.value.set(1 / this.W, 1 / this.H); P.sc.value = sc; P.maxR.value = D ? F.max * sc : 0; P.rs.value = (this.quality === 'play' ? (this.doc.look.haze?.play?.dofStep ?? 2) : 0.5) * sc;
     this.mark('depth of field'); r.setRenderTarget(this.finalRT); post.quads.dof.render(r);
+  }
+
+  /** The pixel-stable camera: the shot camera moved in its own image plane to the nearest whole internal pixel (sized at
+   *  the target distance, at the lens centre), so still geometry lands on the same pixels while the camera drifts and the
+   *  jaggies don't crawl. off: the remainder in internal pixels, which the upscale takes back out so the motion stays smooth. */
+  snapCamera(c) {
+    const f0 = c.target.map((v, i) => v - c.eye[i]), D = Math.hypot(...f0), f = nrm(f0);
+    const r = nrm([f[1] * c.up[2] - f[2] * c.up[1], f[2] * c.up[0] - f[0] * c.up[2], f[0] * c.up[1] - f[1] * c.up[0]]);
+    const u = [r[1] * f[2] - r[2] * f[1], r[2] * f[0] - r[0] * f[2], r[0] * f[1] - r[1] * f[0]], dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    const aspect = this.W / this.H, px = 2 * D * Math.tan(c.fovRender * Math.PI / 360) / this.H / (1 + c.k * (aspect * aspect + 1));
+    const er = dot(c.eye, r) / px, eu = dot(c.eye, u) / px, dr = Math.round(er) - er, du = Math.round(eu) - eu;
+    const d = r.map((v, i) => (v * dr + u[i] * du) * px);
+    return { camera: { ...c, eye: add(c.eye, d), target: add(c.target, d) }, off: [-dr, du] };
   }
 
   /** After the document changed (editor commands, undo): re-index it and move placed objects to their transforms. */
