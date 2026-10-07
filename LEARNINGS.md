@@ -562,7 +562,7 @@ few frames at both qualities while loading and waits for the GPU, so the wait ha
 at load. Chrome caches compiled shaders, so later loads are quick. The architecture should precompile its pipelines at
 load (three's `compileAsync` covers scene materials but not full-screen passes).
 
-## 8. Shadows (research, branch `spike-shadows`)
+## 9. Shadows (research, branch `spike-shadows`)
 
 Three shadow types, each a Show-menu toggle under "Shadows (research)", off by default. Renders to disk follow the
 viewport's shadow toggles (the rest of the look is always full). With every toggle off the picture is pixel-identical to
