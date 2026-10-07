@@ -26,13 +26,13 @@ import { Fn, uniform, uniformArray, texture, cubeTexture, uv, vec2, vec3, vec4, 
 
 /** The look's settings. Fog numbers are metres in the scene (Black Page is desk-sized). Colours are display values. */
 export const HALO_LOOK = {
-  detail: { scale: 6, strength: 0.8 },        // detail tiles per metre (world-space, triplanar; 256 px a tile), strength 0..1
-  reflect: { strength: 0.45, lit: 0.75 },     // cube reflection under the mask; lit: 0 = always full, 1 = scaled by the local light
+  detail: { scale: 6, strength: 0.45 },        // detail tiles per metre (world-space, triplanar; 256 px a tile), strength 0..1
+  reflect: { strength: 0.35, lit: 0.75 },     // cube reflection under the mask; lit: 0 = always full, 1 = scaled by the local light
   selfIllum: 1,                               // derived self-illumination strength (texels that read as lamps / LEDs)
-  lightmap: { cell: 0.05, bleed: 1 },         // lattice cell (m; 0 = per pixel) and colour-bleed strength
+  lightmap: { cell: 0.05, bleed: 0.5 },         // lattice cell (m; 0 = per pixel) and colour-bleed strength
   fog: { color: [0.11, 0.13, 0.16], start: 0.45, opaque: 4.5, max: 0.5, planeY: -0.25, planeDepth: 0.6, planeMax: 0.35 },
   sky: 'fog',                                 // 'fog': the void is fog-coloured; 'cube': the generic cube, fogged
-  glow: 1, flares: 1,
+  glow: 0.4, flares: 1,
 };
 
 /** The generic environment cube, generated: six faces of `size` px (display values). */
@@ -132,7 +132,7 @@ export function haloBodyMaterial(U, H, tex, { map = null, emissiveMap = null, le
     // multipurpose map, derived from the base texel: R reflection mask, G self-illumination, B detail mask
     const lum = dot(c0.rgb, vec3(0.299, 0.587, 0.114)), mx = max(c0.r, max(c0.g, c0.b)), mn = min(c0.r, min(c0.g, c0.b));
     const sat = mx.sub(mn).div(max(mx, 1e-3));
-    const mR = smoothstep(0.28, 0.75, lum).mul(float(1).sub(sat.mul(0.85)));
+    const mR = smoothstep(0.35, 0.85, lum).mul(float(1).sub(sat.mul(0.85)));
     const em = emissiveMap ? texture(emissiveMap, v).rgb : null;
     const mG = em ? dot(em, vec3(0.333)) : smoothstep(0.82, 0.95, mx).mul(smoothstep(0.45, 0.75, sat));
     const mB = smoothstep(0.04, 0.25, lum).mul(float(1).sub(mR.mul(0.5)));
@@ -175,7 +175,7 @@ export function haloBodyMaterial(U, H, tex, { map = null, emissiveMap = null, le
     const inRect = v.x.greaterThan(lr.x).and(v.x.lessThan(lr.z)).and(v.y.greaterThan(lr.y)).and(v.y.lessThan(lr.w));
     const glow = float(0).toVar();
     If(inRect, () => { col.assign(mix(col, U.lc.mul(1.15).add(0.12), min(U.li, 1).mul(0.9))); glow.assign(min(U.li, 1).mul(0.9)); });
-    if (em) { col.addAssign(em.mul(U.eStr)); glow.assign(max(glow, mG.mul(min(U.eStr, 1)))); }
+    if (em) { col.addAssign(em.mul(U.eStr)); glow.assign(max(glow, mG.mul(min(U.eStr, 1)).mul(0.35))); }
     else { col.addAssign(c.mul(mG).mul(H.si)); glow.assign(max(glow, mG.mul(min(H.si, 1)))); }
     // cubemap reflection under the mask, no fresnel; optionally dimmed where the light is low
     const Vd = normalize(P.sub(cameraPosition)), env = cubeTexture(tex.cube, reflect(Vd, n)).rgb;
@@ -217,7 +217,7 @@ const quadMat = node => { const m = new THREE.NodeMaterial(); m.fragmentNode = n
 /** Glow and flares: bright (finalRT rgb x glow mask -> a, quarter size), blur x (a -> b), blur y (b -> a), then the
  *  combine (finalRT + glow + flares -> out) and a copy back into finalRT, so the rest of the pipeline is unchanged. */
 function makeHaloPost({ finalTex, distTex, aTex, bTex, outTex }) {
-  const P = { srcPx: uniform(new THREE.Vector2(1 / 1920, 1 / 1080)), px: uniform(new THREE.Vector2(1 / 480, 1 / 270)), knee: uniform(0.18),
+  const P = { srcPx: uniform(new THREE.Vector2(1 / 1920, 1 / 1080)), px: uniform(new THREE.Vector2(1 / 480, 1 / 270)), knee: uniform(0.45),
     glow: uniform(1), flares: uniform(1), aspect: uniform(16 / 9),
     fq: uniformArray([...Array(NF)].map(() => new THREE.Vector4(0, 0, 0, 0))),   // flare: final uv (xy), scene uv (zw)
     fc: uniformArray([...Array(NF)].map(() => new THREE.Vector4(0, 0, 0, 0))),   // colour (rgb), intensity (w)
@@ -347,7 +347,7 @@ export class HaloCE {
         o.w += wgt; o.area += area;
       }
     }
-    this.vpl = [...objs.entries()].map(([obj, o]) => ({ obj, i: this.objIndex.get(obj), gs: o.gs, ga: o.ga, p: scl3(o.ps, 1 / o.w), n: normalize3(o.ns), r: Math.sqrt(o.area) * 0.35 }));
+    this.vpl = [...objs.entries()].map(([obj, o]) => ({ obj, i: this.objIndex.get(obj), gs: o.gs, ga: o.ga, p: scl3(o.ps, 1 / o.w), n: normalize3(o.ns), r: Math.sqrt(o.area / Math.PI) }));   // r: a disc of the same area, so the bleed at d = 0 is the radiosity
     this.dirty = false;
   }
 
