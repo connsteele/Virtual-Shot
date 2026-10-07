@@ -7,6 +7,7 @@ import { bodyMaterial, crtMaterial, glowMaterial, makeLightUniforms } from './ma
 import { makePost, makeOutline } from './post.js';
 import { makeHaze } from './haze.js';
 import { makeComposite, makeHazeMeter, makeEmitAverage, makeAreaUpscale, makeBloom, flatScreenQuad } from './final_comp.js';
+import { HaloCE, shotFlares } from './looks/halo_ce.js';
 import { indexDoc } from '../core/evaluate.js';
 import { add, scl, xf, nrm, trsOf } from '../core/vec.js';
 
@@ -62,6 +63,14 @@ export class ShotRenderer {
     this.renderer.setSize(ow, oh, false);
   }
 
+  /** The Halo CE look (looks/halo_ce.js; off by default): settings merged over HALO_LOOK, or null for off. It swaps its
+   *  own materials onto the meshes and adds glow and flare passes after depth of field; renders follow it. */
+  setHaloLook(look) {
+    if (!look && !this.halo) return;
+    if (!this.haloCE) this.haloCE = new HaloCE(this);
+    this.crtBase ||= this.crt; this.haloCE.set(look || null); this.halo = look ? this.haloCE : null;
+  }
+
   /** chatCanvas: the tall chat texture; flatCanvas / popsCanvas: the full-frame chat and pops layers (composited here). */
   async init(chatCanvas, { flatCanvas = null, popsCanvas = null } = {}) {
     const { doc, ix } = this;
@@ -101,7 +110,7 @@ export class ShotRenderer {
       return loader.parseAsync(bin.buffer, '');
     };
     const ledRect = ix.obj.led.texelRect, ledTargets = new Set(ix.obj.led.appliesTo || []);
-    this.ledParts = []; this.placed = {};
+    this.ledParts = []; this.placed = {}; this.bodyMeshes = [];   // bodyMeshes: for looks that swap materials (halo_ce.js)
     for (const o of doc.objects) {
       if (o.type !== 'model') continue;
       const gltf = await loadModel(doc.assets[o.asset]);
@@ -123,7 +132,7 @@ export class ShotRenderer {
         if (isScreen) {
           const uvA = geom.attributes.uv; let u0 = [1e9, 1e9], u1 = [-1e9, -1e9];
           for (let i = 0; i < uvA.count; i++) { u0 = [Math.min(u0[0], uvA.getX(i)), Math.min(u0[1], uvA.getY(i))]; u1 = [Math.max(u1[0], uvA.getX(i)), Math.max(u1[1], uvA.getY(i))]; }
-          mesh.material = this.crt = crtMaterial({ chatTex, ghostTex, ub: [...u0, ...u1] });
+          mesh.material = this.crt = crtMaterial({ chatTex, ghostTex, ub: [...u0, ...u1] }); this.crtMesh = mesh;
           // the pixel look flags the screen in the distance pass (g = 2, r scaled with it so r / g stays the distance)
           const flag = this.screenFlag = uniform(0), dd = positionWorld.distance(cameraPosition);
           this.crt.mrtNode = mrt({ dist: vec4(dd.mul(flag.add(1)), flag.add(1), 0, 1) });
@@ -141,7 +150,8 @@ export class ShotRenderer {
         }
         const isLed = ledRe && ledRe.test(nodeName);
         const ov = isLed ? uniform(new THREE.Vector4(0, 0, 0, 0)) : null;
-        mesh.material = bodyMaterial(U, { map: src.map, emissiveMap: src.emissiveMap, ledRect: ledTargets.has(o.id) ? ledRect : [2, 2, 2, 2], ov });
+        const args = { map: src.map, emissiveMap: src.emissiveMap, ledRect: ledTargets.has(o.id) ? ledRect : [2, 2, 2, 2], ov };
+        mesh.material = bodyMaterial(U, args); this.bodyMeshes.push({ mesh, args, obj: o.id });
         if (isLed) this.ledParts.push({ mesh, ov, c0: a0.map((v, c) => (v + a1[c]) / 2) });
       }
       const M = Array.from(root.matrix.elements), ctrLocal = mn.map((v, c) => (v + mx[c]) / 2);
@@ -160,7 +170,8 @@ export class ShotRenderer {
     for (const o of doc.objects.filter(o => o.type === 'card')) {
       const im = await loadImage(assetUrl(doc.assets[o.texture])), tx = new THREE.Texture(im);
       Object.assign(tx, { flipY: false, generateMipmaps: false, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, colorSpace: THREE.NoColorSpace, needsUpdate: true });
-      const mesh = new THREE.Mesh(quad, bodyMaterial(U, { map: tx, scMul: 1.15, blMul: o.brightness || 1.4, rawLed: true }));
+      const args = { map: tx, scMul: 1.15, blMul: o.brightness || 1.4, rawLed: true }, mesh = new THREE.Mesh(quad, bodyMaterial(U, args));
+      this.bodyMeshes.push({ mesh, args, obj: o.id });
       mesh.matrixAutoUpdate = false; mesh.matrix.copy(m4(trsOf(o.transform))); mesh.userData.docId = o.id; this.placed[o.id] = mesh; scene.add(mesh);
     }
     // glows: four for the ringing LEDs, one for the power LED
@@ -345,6 +356,7 @@ export class ShotRenderer {
     // scene pass: the buffer grows with the lens overscan so the centre stays sharp
     const scale = c.k > 1e-4 ? Math.min(2, Math.ceil(c.ov * 2) / 2) : 1, sw = Math.round(this.W * scale), sh = Math.round(this.H * scale);
     if (this.sceneRT.width !== sw || this.sceneRT.height !== sh) this.sceneRT.setSize(sw, sh);
+    if (this.halo) this.halo.preScene();
     this.mark('scene'); r.setMRT(this.sceneMRT); r.setRenderTarget(this.sceneRT); r.clear(); r.render(this.scene, cam); r.setMRT(null);
     // lens + circle of confusion
     const P = post.U, F = st.focus, D = !!(show.dof && F && (F.px > 0 || F.edge > 0 || F.spot > 0));
@@ -358,6 +370,7 @@ export class ShotRenderer {
     this.mark('focus (CoC)'); r.setRenderTarget(this.cocRT); post.quads.coc.render(r);
     const sc = this.H / 1080; P.px.value.set(1 / this.W, 1 / this.H); P.sc.value = sc; P.maxR.value = D ? F.max * sc : 0; P.rs.value = (this.quality === 'play' ? (this.doc.look.haze?.play?.dofStep ?? 2) : 0.5) * sc;
     this.mark('depth of field'); r.setRenderTarget(this.finalRT); post.quads.dof.render(r);
+    if (this.halo) this.halo.postFrame({ lights: show.glows ? shotFlares(st, ix) : [], k: c.k });
   }
 
   /** The pixel-stable camera: the shot camera moved in its own image plane to the nearest whole internal pixel (sized at
@@ -382,6 +395,7 @@ export class ShotRenderer {
       if (node.userData.ctrLocal) this.geo.centres[o.id] = xf(M, node.userData.ctrLocal);   // focus targets follow the object
       if (o.ring && this.geo.wii) Object.assign(this.geo.wii, { M, ctr: this.geo.centres[o.id], up: nrm([M[4], M[5], M[6]]) }); }
     if (this.haze) { const H = this.haze.U, HZ = doc.look.haze; H.exposure.value = HZ.exposure ?? 1; }
+    if (this.haloCE) this.haloCE.dirty = true;   // objects moved: re-bake the colour bleed
   }
 
   /** Render the scene from an editor camera (free view): the engine picture without lens warp, depth of field, haze

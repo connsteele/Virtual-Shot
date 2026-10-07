@@ -4,6 +4,7 @@ import { evaluate, indexDoc } from './core/evaluate.js';
 import { ChatLayer } from './layers/chat2d.js';
 import { PopsLayer } from './layers/pops2d.js';
 import { ShotRenderer, assetUrl, PIXEL_LOOK } from './render/shot_renderer.js';
+import { HALO_LOOK } from './render/looks/halo_ce.js';
 
 const $ = id => document.getElementById(id);
 const params = new URLSearchParams(location.search);
@@ -27,6 +28,7 @@ async function boot() {
   const pops = new PopsLayer(doc.events.pops, { fontFamily: chatDef.fontFamily, cut: doc.cut, fps, altFrames: doc.events.popsAltFrames });
   const shot = await new ShotRenderer($('gpu'), doc, { forceWebGL: params.has('webgl'), trackTimestamp: params.has('gputime') }).init(tall, { flatCanvas: flat, popsCanvas });
   if (params.has('pixels')) shot.setPixelLook(PIXEL_LOOK);   // ?pixels: the chunky-pixel look (480 lines, area-upscaled to 3840x2160)
+  if (params.has('halo')) shot.setHaloLook(HALO_LOOK);       // ?halo: the Halo CE look (looks/halo_ce.js)
   const chaosOf = st => st.chaos;
   $('info').textContent = `${doc.name} · three r186 · ${shot.backend} · ${doc.objects.length} objects, ${doc.tracks.length} tracks`;
   $('scrub').max = last;
