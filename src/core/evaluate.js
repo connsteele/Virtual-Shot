@@ -112,5 +112,21 @@ export function evaluate(doc, t, geo, ix = indexDoc(doc)) {
     focus: focusAt(ix, geo, ix.tracks['cam.focus'], t, pose.eye, vp, pose.k, aspect),
     ghosts,
     haze: doc.look.haze ? { gain: hazeGain(doc.look.haze, frame) } : null,
+    particles: particlesAt(doc, geo, t),
   };
+}
+
+/** Particle events live at this time: { ev, age, origin }. An event is data ({ kind, t, dur, anchor, offset, ... });
+ *  its particles are a pure function of (event, age), drawn by the renderer (src/render/particles.js). The tail lets the
+ *  last particles born before t + dur finish their lives. */
+export function particlesAt(doc, geo, t) {
+  const out = [];
+  for (const ev of doc.events.particles || []) {
+    if (ev.on === false) continue;
+    const age = t - ev.t, tail = ev.tail ?? 1.5;
+    if (age < 0 || age > (ev.dur ?? 2.4) + tail) continue;
+    const base = ev.anchor && geo?.centres?.[ev.anchor] ? geo.centres[ev.anchor] : (ev.position || [0, 0, 0]);
+    out.push({ ev, age, origin: add(base, ev.offset || [0, 0, 0]) });
+  }
+  return out;
 }

@@ -684,6 +684,10 @@
   }
  ],
  "events": {
+  "particles": [
+   {"id": "spell", "kind": "spellBurst", "t": 10.9, "dur": 2.4, "anchor": "wii", "offset": [0, 0.028, 0], "seed": 7,
+    "note": "GPU particles spike: drawn only with Show > Effects > Particles (off by default). Every particle is a pure function of (index, seed, params, t - this.t); see src/render/particles.js for the parameters."}
+  ],
   "ghosts": [
    {
     "t": 7.6,

@@ -56,6 +56,7 @@ export class Timeline {
       rows.push({ events: 'messages', label: 'Chat messages', depth: 1 });
       rows.push({ events: 'ghosts', label: 'Ghost flashes', depth: 1 });
       rows.push({ events: 'pops', label: 'Pops', depth: 1 });
+      if (d.events.particles?.length) rows.push({ events: 'particles', label: 'Particles', depth: 1 });
     } else {
       for (const tr of this.numericTracks()) { const key = `${tr.target}.${tr.prop}`; rows.push({ key, track: tr, label: LABEL[tr.prop] || tr.prop, col: COL[tr.prop] || '#aaa' }); }
     }
@@ -109,7 +110,7 @@ export class Timeline {
       if (r.events) { const list = r.events === 'messages' ? d.layers.find(l => l.type === 'chat2d').script.messages : d.events[r.events];
         const on = (E.sel.kind === 'events' && E.sel.id === r.events) || (r.events === 'messages' && E.sel.kind === 'layer');
         list.forEach((ev, j) => { const t0 = ev.t, dur = r.events === 'messages' ? 0.08 : (ev.dur ?? 4 / 60), X0 = this.tX(t0), X1 = Math.max(X0 + 3, this.tX(t0 + dur));
-          x.fillStyle = r.events === 'ghosts' ? '#8FB8E0' : r.events === 'pops' ? '#E06A66' : '#C3ACC6'; x.globalAlpha = on ? 0.95 : 0.6;
+          x.fillStyle = r.events === 'ghosts' ? '#8FB8E0' : r.events === 'pops' ? '#E06A66' : r.events === 'particles' ? '#7FE0E8' : '#C3ACC6'; x.globalAlpha = on ? 0.95 : 0.6;
           x.fillRect(X0, cy - 6, X1 - X0, 12); x.globalAlpha = 1;
           if (r.events === 'pops' && X1 - X0 > 30) { x.fillStyle = '#161516'; x.fillText(ev.text.slice(0, 18), X0 + 3, cy + 4); } }); }
     });

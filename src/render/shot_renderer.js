@@ -8,6 +8,7 @@ import { makePost, makeOutline } from './post.js';
 import { makeHaze } from './haze.js';
 import { makeComposite, makeHazeMeter, makeEmitAverage, makeAreaUpscale, makeBloom, flatScreenQuad } from './final_comp.js';
 import { indexDoc } from '../core/evaluate.js';
+import { makeSpell } from './particles.js';
 import { add, scl, xf, nrm, trsOf } from '../core/vec.js';
 
 /** Asset reference -> URL. psx:, wii:, bp: are read-only mounts of the original folders on the dev server;
@@ -60,6 +61,32 @@ export class ShotRenderer {
     if (ct.generateMipmaps !== mip) { Object.assign(ct, { generateMipmaps: mip, minFilter: mip ? THREE.LinearMipmapLinearFilter : THREE.LinearFilter }); ct.dispose(); ct.needsUpdate = true; }
     this.crt.userData.S.mip.value = mip ? 1 : 0;
     this.renderer.setSize(ow, oh, false);
+  }
+
+  /** GPU particles (off by default): draw the document's `particles` events (src/render/particles.js). A renderer
+   *  setting like the pixel look, so renders to disk follow it. Emitters are built on first use and kept per event. */
+  setParticles(on) {
+    this.particlesOn = !!on;
+    if (!on || this.fxScene) return;
+    this.fxScene = new THREE.Scene(); this.fx = new Map();
+    // the particle pass draws over the scene buffer; colour adds (the material's blending), distance takes the minimum,
+    // so a spark's solid centre becomes the nearest surface for depth of field and haze and the rest leaves it alone
+    const minBlend = Object.assign(new THREE.BlendMode(THREE.CustomBlending), { blendSrc: THREE.OneFactor, blendDst: THREE.OneFactor,
+      blendEquation: THREE.MinEquation, blendSrcAlpha: THREE.OneFactor, blendDstAlpha: THREE.OneFactor, blendEquationAlpha: THREE.MinEquation });
+    this.fxMRT = mrt({ output, dist: vec4(1e4, 1e4, 0, 1) }).setBlendMode('dist', minBlend);
+  }
+
+  /** The emitters for this frame's particle events (built once per event and parameter set), updated to the frame. */
+  fxFor(list) {
+    const seen = new Set();
+    for (const p of list) {
+      const { t: _t, ...rest } = p.ev, key = JSON.stringify(rest); seen.add(key);
+      let e = this.fx.get(key);
+      if (!e) { e = makeSpell(p.ev); this.fx.set(key, e); this.fxScene.add(e.group); }
+      e.update(p); e.group.visible = true;
+    }
+    for (const [key, e] of this.fx) if (!seen.has(key)) e.group.visible = false;
+    return seen.size;
   }
 
   /** chatCanvas: the tall chat texture; flatCanvas / popsCanvas: the full-frame chat and pops layers (composited here). */
@@ -346,6 +373,10 @@ export class ShotRenderer {
     const scale = c.k > 1e-4 ? Math.min(2, Math.ceil(c.ov * 2) / 2) : 1, sw = Math.round(this.W * scale), sh = Math.round(this.H * scale);
     if (this.sceneRT.width !== sw || this.sceneRT.height !== sh) this.sceneRT.setSize(sw, sh);
     this.mark('scene'); r.setMRT(this.sceneMRT); r.setRenderTarget(this.sceneRT); r.clear(); r.render(this.scene, cam); r.setMRT(null);
+    if (this.particlesOn && st.particles?.length && this.fxFor(st.particles)) {
+      const ac = r.autoClear; r.autoClear = false;
+      this.mark('particles'); r.setMRT(this.fxMRT); r.setRenderTarget(this.sceneRT); r.render(this.fxScene, cam); r.setMRT(null); r.autoClear = ac;
+    }
     // lens + circle of confusion
     const P = post.U, F = st.focus, D = !!(show.dof && F && (F.px > 0 || F.edge > 0 || F.spot > 0));
     P.k.value = c.k; P.aspect.value = this.W / this.H; P.sq.value = c.squint;

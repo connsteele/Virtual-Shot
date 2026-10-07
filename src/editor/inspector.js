@@ -74,11 +74,11 @@ export class Inspector {
           <input type="text" value="${esc(m.system || `${m.user}> ${m.text}`)}" data-ev="messages" data-i="${i}" data-k="${m.system ? 'system' : 'text'}" ${m.system ? '' : `data-user="${esc(m.user)}"`} aria-label="Message ${i + 1}"></div>`).join('')}</div>
         <div class="note">Highlighted messages have appeared by the playhead. Edit "user> text"; times are seconds.</div></div>`;
     } else if (s.kind === 'events') {
-      title = s.id === 'pops' ? 'Pops' : 'Ghost flashes';
+      title = s.id === 'pops' ? 'Pops' : s.id === 'particles' ? 'Particles' : 'Ghost flashes';
       const list = d.events[s.id];
       html += `<div class="sect"><h3>${title}</h3><div class="list">${list.map((g, i) => `<div class="item">
           <input type="number" step="0.01" value="${(+g.t).toFixed(3)}" data-ev="${s.id}" data-i="${i}" data-k="t" aria-label="Time ${i + 1}">
-          ${s.id === 'pops' ? `<input type="text" value="${esc(g.text)}" data-ev="pops" data-i="${i}" data-k="text" aria-label="Pop text ${i + 1}">` : `<span class="muted">${esc(g.img.replace('ghost_', ''))} · ${g.dur}s · ${g.intensity}</span>`}</div>`).join('')}</div></div>`;
+          ${s.id === 'pops' ? `<input type="text" value="${esc(g.text)}" data-ev="pops" data-i="${i}" data-k="text" aria-label="Pop text ${i + 1}">` : s.id === 'particles' ? `<span class="muted">${esc(g.kind)} · ${g.dur}s · at ${esc(g.anchor || 'position')} · seed ${g.seed}</span>` : `<span class="muted">${esc(g.img.replace('ghost_', ''))} · ${g.dur}s · ${g.intensity}</span>`}</div>`).join('')}</div></div>`;
     } else if (s.kind === 'look' && s.id === 'lighting') {
       title = 'Lighting'; const L = d.look.lighting;
       html += `<div class="sect"><h3>Screen light</h3>${this.staticRow('lighting.screen', 'Screen', L.screen, 0.1)}${this.staticRow('lighting.bounce', 'Bounce', L.bounce, 0.05)}${this.staticRow('lighting.ambient', 'Ambient', L.ambient, 0.01)}

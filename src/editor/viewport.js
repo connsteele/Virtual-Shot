@@ -117,11 +117,13 @@ export class Viewport {
         ${pick('pixBands', 'Lighting', [[0, 'Smooth'], [1, 'Banded, wide steps'], [2, 'Banded, fine steps']])}
         ${pick('pixBloom', 'Bloom (Wii)', [[0, 'Off'], [0.5, 'Soft'], [1, 'Strong']])}
         ${item('pixStable', 'Pixel-stable camera', 'experimental')}</div>
+      <div class="menu-group"><div class="menu-head">Effects</div>
+        ${item('particles', 'Particles', 'GPU, spike')}</div>
       <div class="menu-group"><div class="menu-head">Overlays</div>
         ${item('safe', 'Safe frames', 'camera')}${item('grid', 'Grid', 'free')}${item('frustum', 'Shot camera', 'free')}${item('hazeBox', 'Haze bounds', 'free')}
         ${item('lights', 'Lights and glass axes', 'free')}${item('bounds', 'Selection bounds', 'free')}</div>
       <div class="menu-foot"><button type="button" id="revealAll">Reveal hidden objects <kbd>Alt+H</kbd></button>
-        <div class="note">Viewport only: renders to disk always use the full look. Chunky pixels applies to renders too (3840×2160).</div></div>`;
+        <div class="note">Viewport only: renders to disk always use the full look. Chunky pixels and particles apply to renders too.</div></div>`;
     pop.addEventListener('change', e => { const k = e.target.dataset.show, p = e.target.dataset.pick;
       if (k) E.setShow(k, e.target.checked); if (p) E.setShow(p, e.target.value === 'full' ? 'full' : +e.target.value); });
     pop.querySelector('#revealAll').onclick = () => E.revealAll();

@@ -34,6 +34,7 @@ export class Outliner {
       ${row({ kind: 'layer', id: chat.id }, ICON.layer, 'Chat layer (2D)', 0, `<span class="count">${chat.script.messages.length}</span>`)}
       ${row({ kind: 'events', id: 'ghosts' }, ICON.event, 'Ghost flashes', 0, `<span class="count">${doc.events.ghosts.length}</span>`, look('ghosts'))}
       ${row({ kind: 'events', id: 'pops' }, ICON.event, 'Pops (2D)', 0, `<span class="count">${doc.events.pops.length}</span>`, look('pops'))}
+      ${doc.events.particles?.length ? row({ kind: 'events', id: 'particles' }, ICON.event, 'Particles', 0, `<span class="count">${doc.events.particles.length}</span>`) : ''}
       ${row({ kind: 'look', id: 'lighting' }, ICON.look, 'Lighting', 0)}
       ${row({ kind: 'look', id: 'haze' }, ICON.look, 'Haze', 0, '', look('haze'))}
     </ul>`;
