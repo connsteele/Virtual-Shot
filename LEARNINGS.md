@@ -692,6 +692,119 @@ test that.
 **GPU log.** `nvidia-smi` read 7–28% utilisation (4.1 of 24.5 GB) at each check. No other spike held `.gpu.lock`;
 this spike took it twice, each time for one screenshot of about 10 s, and released it. No waits or overlaps.
 
+### Research pass (7 Oct overnight, `characters-research`)
+
+Code: `src/characters/research.js` (crowds, benches, variations; loaded with `import()` from a headless script, nothing
+runs by default), plus three lab flags, all off by default: `?props` (a lit test set: ground plane and PSX Mega Pack
+crates, barrels, vending machine and carpet read in place from `/psx/`), `?shadows` (sun shadow map) and `?gputime`
+(WebGPU timestamp queries). `attachToEditor(VS.E, {n})` puts n characters into the editor's Black Page shot as
+figurines (1.8 m × 0.018, about 3 cm tall) on the mouse pad beside the Wii remote, shaded by the shot's own
+`bodyMaterial`, posed before every `shot.render` and timed as CPU parts in the Stats panel. The editor's code is
+untouched (only the lab changed), so the default look is bit-identical by construction.
+
+Outputs: `Virtual Shot spike\characters\research\`: `gpu_editor.json`, `gpu_lab_*.json`, `cpu_research.json`,
+`sheet_lab_counts.png`, `sheet_blackpage_counts_crop.png`, `blackpage\still_f720_{1,5,20}.png`,
+`clips\lab_{1,5,20}.mp4` (3 s, lit set with shadows) and `clips\blackpage_20.mp4` (f660–749, Render quality, 20 figurines).
+
+GPU: NVIDIA Lovelace, WebGPU with timestamps, behind the lock (11:09–11:12 UTC). **Background utilisation was 22–38%
+from desktop apps when the lock was taken.** No other lock holder; the motion-blur research agent had released a few
+minutes before. Read the GPU numbers as upper bounds (they are tiny anyway).
+
+**Cost for 1 / 5 / 20 characters (the numbers the build round owed).** 20 characters = 52 skinned meshes, 2,327 bones,
+257k skinned vertices.
+
+| Per frame | 1 | 5 | 20 |
+|---|---|---|---|
+| CPU evaluate, foot lock off (pure, no GPU) | 0.05 ms | 0.16 ms | 0.58 ms |
+| CPU evaluate, foot lock on | 0.13 ms | 0.39 ms | 1.43 ms |
+| CPU copy pose to bones | 0.01–0.04 | 0.08–0.1 | 0.22–0.46 |
+| CPU bone matrices (`updateMatrixWorld` + `skeleton.update`) | 0.03 | 0.1–0.17 | 0.33–0.5 |
+| CPU encode + submit (lab, scene only; 0 chars: 0.4) | 0.38 | 0.74 | 1.44 |
+| GPU, lab scene pass 1080p / 4K (MSAA, props; 0 chars: 0.04 / 0.18) | 0.05 / 0.18 | 0.09 / 0.29 | 0.17 / 0.36 |
+| GPU, lab with sun shadows 1080p / 4K | 0.06 / 0.26 | 0.15 / 0.33 | 0.27 / 0.49 |
+| GPU, Black Page `scene` pass (figurines; 0 chars: 0.09) | 0.09 | 0.10 | 0.13 |
+| Black Page frame GPU total, Play / Render | 5.15 / 114.4 | 5.17 / 114.2 | 5.2 / 114.3 |
+| Black Page frame CPU, Play / Render (0 chars: 2.2–4.4) | 2.3 / 2.4 | about 3 (noisy) | 4.9 / 6.5 |
+
+- **Characters cost CPU, not GPU.** Vertex skinning of 257k vertices adds 0.1–0.3 ms of GPU even at 4K; the shadow pass
+  skins again (+0.1 ms). The haze still owns the Render frame (about 110 of 114 ms). For 20 characters the CPU side is
+  about 3.5 ms (evaluate 1.4 with foot lock, copy 0.2–0.5, bone matrices 0.35–0.5, about 1 ms more encode for 52 more
+  draw calls with their bone buffers). That fits a 16.7 ms Play frame; 100 characters would not without a worker.
+- **Scrubbing costs the same as playing.** Evaluate is pure, so random frames cost what sequential ones do (20 chars:
+  evaluate 1.34 vs 1.14 ms; whole viewport frame 5.7 vs 5.6 ms CPU, 14.6–15.5 ms wall). No warm-up, no replay from 0.
+- **Where evaluate's time goes** (X Bot, 67 bones): sampling one clip 0.028 ms, FK 0.004 ms, the whole pose 0.046 ms.
+  Foot lock triples it (0.14 ms) because each locked foot re-evaluates the pose at its contact start (up to 3 poses a
+  frame). Each extra active clip adds about 0.03 ms (1/2/4/8 overlapping: 0.04/0.07/0.13/0.27 ms). A 12-block chain of
+  4 clips with crossfades evaluates in 0.11 ms a frame and stays pure (forward = reverse).
+- Noise: one of three lab runs had 20-char evaluate at 3.8 ms (CPU contention from other agents); the two others agreed
+  at 1.36–1.37 ms. The table uses the repeated numbers.
+
+**Retargeting against the references.** Mean limb-direction error against the X Bot source over walk, run, idle and
+agree, in degrees:
+
+| Target | three `SkeletonUtils.retargetClip` | rest-relative | rest-relative + `alignRest` |
+|---|---|---|---|
+| Soldier (same Mixamo names, other export) | 101–121 (worst 178) | 1.4 (worst 2.8) | **0.2** (worst 2.3) |
+| RobotExpressive (other names, arms-down bind, IK-controller feet) | 80–93 (worst 164) | 39 (worst 75) | **0.4** (worst 4.6) |
+
+- *Mixamo* retargets on its server by auto-rigging the mesh onto its own skeleton, so Mixamo exports share a skeleton and
+  a T-pose bind. Trouble starts when exports disagree in bone axes (Soldier vs X Bot: identical names, legs flipped
+  180°). Copying world rotations (three's retargeter, or Blender "Copy Rotation" constraints in world space) gets this
+  wrong; rest-relative deltas get it right.
+- *Unreal's IK Retargeter* works the same way at heart: a **retarget pose** per rig (the target posed into the source's
+  posture; our `alignRest` does this automatically by swinging each mapped bone toward its mapped child), FK chains
+  that copy rotation deltas from that pose, the **retarget root** (pelvis) translation scaled by the height ratio (ours:
+  hip-height ratio), and per-chain **IK goals** that fix feet and hands after FK, with stride warping and speed
+  planting. What we lack: (1) chain-level mapping (UE maps chains with different bone counts, such as a 3-bone spine
+  onto 5; ours maps bones 1:1, and the robot's hips-to-neck has 3.8° error); (2) hand IK goals (hand spacing on `agree`
+  drifts 0.14–0.2 shoulder widths from the source, so claps or hands on hips won't stay in contact); (3) a per-chain
+  blend between FK and IK.
+- *Blender* has no built-in retargeter. The usual add-ons (Rokoko, Auto-Rig Pro Remap, Expy Kit) match rest poses first,
+  copy rotations relative to them, then bake: the same model as ours, which is a load-time bake to a new clip.
+- *Control Rig* foot placement and Leg IK are the analogue of our foot lock, but they trace the ground and run per frame
+  in the (stateful) animation graph. Ours locks to the foot's own position at contact start, evaluated at that earlier
+  time, so it stays pure. That is the right choice for a shot tool: scrub anywhere, same picture.
+
+**Variations: how far it goes.** Foot sliding while planted, cm/s, lock off → on:
+
+| Case | Off | On | Note |
+|---|---|---|---|
+| Lab scene as authored: X Bot / Soldier / Robot | 27 / 20 / 28 | 4.9 / 0.14 / 3.8 | X Bot's residue is its crossfades; the robot's legs stretch to **119%** |
+| X Bot walk ×0.5 to ×2, travel re-matched | 11 to 43 | 0.05 to 0.2 | speed changes are fine when travel follows |
+| X Bot walk ×0.5, travel left at ×1 | 67 | **18** | stride too short to reach: IK clamps at full leg length and the foot slides |
+| X Bot walk ×0.75 / ×1.5 / ×2, travel at ×1 | 29 / 94 / 173 | 2.3 / 0.2 / 0.5 | over-striding is absorbed by bending; under-striding isn't |
+| Robot walk, any speed, travel at ×1 | 17–209 | 0 | its IK-controller foot is moved to the target, so it never slides, but the leg detaches (up to 109% length) |
+| Walk → run crossfade 0.1 / 0.25 / 0.5 / 1.0 s, whole range | 22–39 | 0.9 / 0.7 / 1.2 / **8.1** | inside the fade: 26 / 7 / 10 / **37** |
+
+Foot lock survives speed changes and travel faster than the clip, breaks when travel is slower than the leg can reach,
+and still slides in crossfades (where the dominant block switches), worse the longer the fade. For IK-controller rigs it
+must clamp the foot to the leg's reach instead of moving it freely.
+
+**In the shots.** In the lit set (`clips\lab_*.mp4`, PSX props, sun shadows) the characters read well; feet stay
+planted except in the blend into `agree`. In the Black Page shot the figurines are lit only near the Wii's red light and
+the CRT; at frame 720 they sit just outside the depth-of-field band and read as soft silhouettes (place them inside the
+focus band or key the focus to them). Skinned meshes work with the shot's TSL `bodyMaterial` unchanged (three adds
+skinning to any node material), but `normalWorldGeometry` is the **unskinned** normal, so lighting on bent limbs is
+slightly off: use the skinned `normalWorld` for characters.
+
+**Recommendations for the real build.**
+1. Keep the pure evaluate, the rest-relative retarget with automatic rest alignment, and contacts taken from the source.
+   They beat three's retargeter by two orders of magnitude in error, and cost 1.5–2 ms per clip at load.
+2. Rig profile in the scene JSON: add *chains* (spine, neck, arms, legs, each a list of bones) so rigs with different
+   bone counts map like UE's IK Retargeter; keep bone-level overrides.
+3. Foot lock: clamp the target to the leg's reach (blend the lock out past about 98% length), lock through crossfades
+   by blending the two blocks' targets, and add hand IK goals as an opt-in (contacts per clip, like feet).
+4. Budget about 0.17 ms CPU per character per frame all-in at Play. Move evaluate to a worker only past about 40
+   characters. GPU is not a concern at these counts; no GPU skinning caches needed.
+5. Use the skinned normal in `bodyMaterial` for characters; looks (pixel, cel) then apply to characters unchanged.
+6. Look presets: characters need no `look.style` branch of their own; they inherit the shot's materials. A preset may
+   later want `characters.outline` (cel) or vertex snapping (PSX).
+
+**Open questions for Connor.** Which real characters for Calling (Wii): Miis via glTF/VRM, or Mixamo exports through
+Blender (the FBX → glTF route is still untested)? Should foot lock default to on for walking clips? Do figurine-scale
+characters in the Black Page set matter, or are characters for other shots?
+
+
 ## Running the spike
 
 ```

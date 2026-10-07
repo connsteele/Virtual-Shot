@@ -48,7 +48,7 @@ export async function loadCharAssets(doc) {
 // Crowds: n copies of the scene's characters (cycling X Bot / Soldier / Robot), each group shifted in space and in
 // clip phase so poses differ, with its travel keys moved along.
 
-export function crowdDoc(base, n, { dz = 0.55, phase = 0.37, ik } = {}) {
+export function crowdDoc(base, n, { dz = 0.9, phase = 0.37, ik } = {}) {
   const doc = clone(base), chars = base.objects.filter(o => o.type === 'character'), G = Math.ceil(n / chars.length);
   doc.objects = base.objects.filter(o => o.type !== 'character'); doc.tracks = base.tracks.filter(t => !chars.some(c => c.id === t.target));
   for (let k = 0; k < n; k++) {
@@ -108,7 +108,7 @@ export class CrowdView {
 // ---------------------------------------------------------------------------------------------------------------------
 // Editor: figurines in the Black Page shot (on the mouse pad behind the Wii remote), lit by the shot's own body shader
 
-export async function attachToEditor(E, { n = 5, scale = 0.035, at = [0.43, 0.0035, 0.2], yaw = -25, tOffset = 0 } = {}) {
+export async function attachToEditor(E, { n = 5, scale = 0.018, at = [0.53, 0.0035, 0.28], yaw = -21, tOffset = 0 } = {}) {
   const base = await (await fetch('/scenes/characters.scene.json', { cache: 'no-store' })).json();
   const A = E.charA ||= await loadCharAssets(base);
   const parent = new THREE.Matrix4().compose(new THREE.Vector3(...at), new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), yaw * Math.PI / 180), new THREE.Vector3().setScalar(scale))
