@@ -6,6 +6,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { bodyMaterial, crtMaterial, glowMaterial, makeLightUniforms } from './materials.js';
 import { makePost, makeOutline } from './post.js';
 import { makeHaze } from './haze.js';
+import { makeVelocityMaterial, makeMotionBlur } from './motion_blur.js';
 import { makeComposite, makeHazeMeter, makeEmitAverage, makeAreaUpscale, makeBloom, flatScreenQuad, srgbToLinear, linearToSrgb } from './final_comp.js';
 import { indexDoc } from '../core/evaluate.js';
 import { add, scl, xf, nrm, trsOf } from '../core/vec.js';
@@ -385,10 +386,39 @@ export class ShotRenderer {
     const outl = !!this.pixel?.outlines; P.alt.value = outl ? 1 : 0;
     if (outl) { const O = this.outline; if (this.outlineRT.width !== sw || this.outlineRT.height !== sh) this.outlineRT.setSize(sw, sh);
       O.U.px.value.set(1 / sw, 1 / sh); this.mark('outlines'); r.setRenderTarget(this.outlineRT); O.quad.render(r); }
+    if (this.mbStates && !st.flat.before) { this.velocityBlur(this.mbStates, sw, sh); P.alt.value = 1; }   // per-object motion blur (off unless set)
     this.mark('lens'); r.setRenderTarget(this.lensRT); post.quads.lens.render(r);
     this.mark('focus (CoC)'); r.setRenderTarget(this.cocRT); post.quads.coc.render(r);
     const sc = this.H / 1080; P.px.value.set(1 / this.W, 1 / this.H); P.sc.value = sc; P.maxR.value = D ? F.max * sc : 0; P.rs.value = (this.quality === 'play' ? (this.doc.look.haze?.play?.dofStep ?? 2) : 0.5) * sc;
     this.mark('depth of field'); r.setRenderTarget(this.finalRT); post.quads.dof.render(r);
+  }
+
+  /** Per-object motion blur (motion_blur.js): the velocity pass, then the gather into outlineRT (the lens's
+   *  alternate input). states = { open, close }: the document evaluated at the shutter's open and close. */
+  velocityBlur(states, sw, sh) {
+    const r = this.renderer;
+    if (!this.mbv) {
+      const velRT = new THREE.RenderTarget(sw, sh, { depthBuffer: true, generateMipmaps: false, type: THREE.HalfFloatType, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter });
+      const vm = makeVelocityMaterial(), blur = makeMotionBlur({ colorTex: this.sceneRT.textures[0], distTex: this.sceneRT.textures[1], velTex: velRT.texture });
+      this.mbv = { velRT, vm, blur, cam: new THREE.PerspectiveCamera() };
+    }
+    const M = this.mbv, aspect = this.W / this.H;
+    if (M.velRT.width !== sw || M.velRT.height !== sh) M.velRT.setSize(sw, sh);
+    if (this.outlineRT.width !== sw || this.outlineRT.height !== sh) this.outlineRT.setSize(sw, sh);
+    const vp = (c, out) => { const k = M.cam; k.fov = c.fovRender; k.aspect = aspect; k.near = c.near; k.far = c.far; k.position.set(...c.eye); k.up.set(...c.up);
+      k.lookAt(v3(c.target)); k.updateProjectionMatrix(); k.updateMatrixWorld(true); return out.multiplyMatrices(k.projectionMatrix, k.matrixWorldInverse); };
+    vp(states.open.camera, M.vm.U.openVP.value); vp(states.close.camera, M.vm.U.closeVP.value);
+    // objects that move inside the shutter: the ringing remote's rumble (the only animated transform in this scene)
+    const roots = this.wiiRoot ? [[this.wiiRoot, s => { const m = this.wiiRoot.userData.base.clone(); if (s.ring && s.ring.rum) m.premultiply(m4(s.ring.rum)); return m; }]] : [];
+    for (const [root, at] of roots) {
+      const inv = root.matrixWorld.clone().invert(), mo = at(states.open), mc = at(states.close);
+      root.traverse(n => { if (!n.isMesh) return; const rel = inv.clone().multiply(n.matrixWorld); n.userData.mbOpen = mo.clone().multiply(rel); n.userData.mbClose = mc.clone().multiply(rel); });
+    }
+    const vis = this.glows.map(g => g.visible); this.glows.forEach(g => { g.visible = false; });
+    this.mark('motion blur: velocity'); this.scene.overrideMaterial = M.vm.material; r.setRenderTarget(M.velRT); r.clear(); r.render(this.scene, this.camera); this.scene.overrideMaterial = null;
+    this.glows.forEach((g, i) => { g.visible = vis[i]; });
+    M.blur.U.px.value.set(1 / sw, 1 / sh); M.blur.U.maxPx.value = 96 * sh / 1080;
+    this.mark('motion blur: gather'); r.setRenderTarget(this.outlineRT); M.blur.quad.render(r);
   }
 
   /** The pixel-stable camera: the shot camera moved in its own image plane to the nearest whole internal pixel (sized at

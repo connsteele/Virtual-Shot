@@ -64,6 +64,7 @@ export class Inspector {
             <div class="note">Procedural and repeatable: the same time always gives the same shake. Off by default.</div></div>
           <div class="sect"><h3>Shutter (motion blur)</h3>${this.flagRow('shutter.on', 'Motion blur', o.shutter?.on)}
             <div class="prop static"><label>Shutter angle (°)</label><input type="number" step="15" value="${o.shutter?.angle ?? 180}" data-objp="shutter.angle" aria-label="Shutter angle"></div>
+            <div class="prop static"><label>Method</label><select data-objp="shutter.mode" aria-label="Motion blur method"><option value="accumulate" ${o.shutter?.mode !== 'velocity' ? 'selected' : ''}>Sub-frame (exact, N× cost)</option><option value="velocity" ${o.shutter?.mode === 'velocity' ? 'selected' : ''}>Velocity buffer (fast)</option></select></div>
             <div class="prop static"><label>Samples</label><input type="number" step="1" min="2" value="${o.shutter?.samples ?? 8}" data-objp="shutter.samples" aria-label="Shutter samples"></div>
             <div class="note">Render quality and renders to disk only: each frame is rendered once per sample and averaged.</div></div>
           <div class="sect"><h3>Gamepad take</h3><button type="button" data-act="take">${E.take?.on ? 'Stop take' : 'Record take'}</button>

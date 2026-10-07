@@ -657,6 +657,45 @@ cel spike's first timing run, which that spike retook. The sequences (take, blur
 **Next:** `amount` as a keyable track, blend-out at take ends, a takes list (keep every take in the document and pick one,
 as Unreal's Take Recorder does), the per-object velocity blur compared against this accumulation, and a real gamepad test.
 
+## Spike: Per-object motion blur (branch `spike-motion-blur`, built on `spike-camera-kit`)
+
+A velocity-buffer blur, deterministic in t, compared against the camera kit's exact sub-frame accumulation. Turn it on
+with the camera's Shutter section, Method "Velocity buffer (fast)" (`cam.shutter = { on, angle, mode: 'velocity' }`);
+off by default, and the default look is bit-identical (f300, f720: 0 differing pixels). Frames:
+`G:\Claude\Virtual Legacy\Channel\Virtual Shot spike\motion_blur\` (`sharp_velocity_exact.mp4`: sharp | velocity | exact,
+over the camera kit's gamepad take, f600–700).
+
+**How it works** (`src/render/motion_blur.js`, `ShotRenderer.velocityBlur`)
+- Velocity is the screen position at the shutter's close minus at its open, both from the document evaluated at those
+  times (`E.mbStates()`), never from "the last frame drawn". The same frame always blurs the same (f620 rendered after
+  jumping to f100: 0 differing pixels), which a TAA-style previous-frame velocity (three's `velocity` node) would not do.
+- Velocity pass: the scene again with an override material; open/close world matrices per object come from uniforms
+  updated per object (`uniform(Matrix4).onObjectUpdate(({object}) => object.userData.mbOpen)`), so one material serves
+  every mesh. The only transform animated within a frame here is the ringing remote's rumble; other objects use their
+  current matrix. Glows are hidden for the pass.
+- Gather: 16 taps along each pixel's velocity in linear light, with McGuire et al.'s rule simplified: a nearer tap
+  counts if its own motion reaches this pixel, a farther one if this pixel's motion reaches it. Clamped to 96 px at 1080.
+- It writes into the lens pass's alternate input (the pixel outlines' slot), so the blur happens before lens warp, depth
+  of field, haze and the 2D layers.
+
+**Findings**
+- **Cost: 0.25 ms GPU** (velocity 0.02 ms, gather 0.23 ms) in Play and Render quality, against **1.19 s a frame** for 8
+  exact samples. Cheap enough for playback.
+- **Against the exact blur** (RMSE in 8-bit levels, every 5th frame of the take): during the whip pan (f605–645) the
+  velocity blur halves the error of a sharp frame (f620: 0.42 vs 0.85); once the camera is nearly still (f650 on) it is
+  slightly further from exact than sharp (0.16–0.31 vs 0.10–0.28) because the exact version also averages the haze's own
+  drift over the shutter, which the velocity blur doesn't touch, and the gather softens a little. f600 (the take's first
+  frame, where the shutter straddles a jump in the keys) is wrong in both (8.2).
+- What it can't do, by design: blur the haze (it's composited later; volumes would need their own reprojection),
+  blur the 2D layers, or show transparency and shading changes within the shutter (the ring light pulsing). For stills
+  and finals, the exact accumulation stays the reference; the velocity blur is the Play and preview default.
+- The shot's own camera moves are slow pushes, so in the original Black Page timing the blur is barely visible; it
+  matters for fast takes, handheld at high amounts, and animated objects (the object and character animation spikes).
+
+**Next:** feed object animation and characters (skinned meshes need open/close bone matrices: three's skinning node
+would need a second set of bone textures), blur the haze by reprojecting its march with the camera's velocity, and a
+tile-max velocity pass for very long blurs.
+
 ## Running the spike
 
 ```

@@ -99,13 +99,13 @@ async function boot() {
     const st = E.st = E.state(), t = st.t;
     perf.begin(output ? 'output' : E.view === 'free' ? 'free' : quality);
     shot.setHidden(output ? new Set() : E.hidden);
-    if (E.view === 'free' && !output) {
+    if (E.view === 'free' && !output) { shot.mbStates = null;
       const key = `${t}|${st.chaos}`, chatUp = drawn.tall !== key;
       if (chatUp) { perf.time('2D chat (screen texture)', () => chat.render(tctx, t, st.chaos, { geom: 'tall' })); drawn.tall = key; }
       const helpers = perf.time('helpers', () => viewport.helpers());
       perf.time(chatUp ? 'three: encode + upload chat' : 'three: encode', () => shot.renderFree(st, viewport.freeCam, helpers, E.show, { chat: chatUp }));
     } else {
-      E.layerOpts = layerOpts(st); const u = E.layerOpts.upload, ups = ['chat', 'flat', 'pops'].filter(k => u[k] && (k === 'chat' || E.layerOpts[k]));
+      shot.mbStates = E.mbStates(); E.layerOpts = layerOpts(st); const u = E.layerOpts.upload, ups = ['chat', 'flat', 'pops'].filter(k => u[k] && (k === 'chat' || E.layerOpts[k]));
       perf.time(ups.length ? `three: encode + upload ${ups.join(', ')}` : 'three: encode', () => shot.render(st, { ...E.layerOpts, quality, show: output ? undefined : E.show }));
     }
     E.quality = quality; perf.time('overlay', () => viewport.overlay(st));
@@ -121,7 +121,7 @@ async function boot() {
   const gpuIdle = () => Promise.race([shot.backend === 'WebGPU' ? shot.renderer.backend.device.queue.onSubmittedWorkDone() : sleep(25), sleep(40)]);
   /** Sample times inside the shutter of the current frame (centred on it), or null when cam.shutter is off.
    *  cam.shutter = { on, angle (degrees; 180 = half the frame interval), samples }. Kept before the cut. */
-  E.shutterTimes = () => { const sh = E.ix.obj.cam.shutter; if (!sh || !sh.on) return null;
+  E.shutterTimes = () => { const sh = E.ix.obj.cam.shutter; if (!sh || !sh.on || sh.mode === 'velocity') return null;
     const n = Math.max(2, sh.samples || 8), open = (sh.angle ?? 180) / 360 / E.fps, t = E.frame / E.fps;
     return Array.from({ length: n }, (_, i) => Math.min(E.doc.cut - 1e-4, Math.max(0, t + ((i + 0.5) / n - 0.5) * open))); };
   /** A Render-quality frame with shutter motion blur: one sample per step, waiting for the GPU between them; the last
@@ -133,6 +133,10 @@ async function boot() {
     after?.($('gpu')); E.quality = 'render'; hud(`Render quality, motion blur (${times.length} samples)`); return true;
   };
   const shutterTag = {}, gpuDone = () => Promise.race([shot.backend === 'WebGPU' ? shot.renderer.backend.device.queue.onSubmittedWorkDone() : sleep(150), sleep(2000)]);
+  /** cam.shutter.mode 'velocity': the document at the shutter's open and close, for the per-object velocity blur. */
+  E.mbStates = () => { const sh = E.ix.obj.cam.shutter; if (!sh || !sh.on || sh.mode !== 'velocity') return null;
+    const open = (sh.angle ?? 180) / 360 / E.fps, t = E.frame / E.fps, at = x => evaluate(E.doc, Math.min(E.doc.cut - 1e-4, Math.max(0, x)), shot.geo, E.ix, E.over);
+    return { open: at(t - open / 2), close: at(t + open / 2) }; };
   const refine = async () => {
     if (E.view !== 'camera' || E.playing || E.interacting || E.refineMode !== 'idle' || !E.st) return;
     if (E.shutterTimes()) { refineJob = shutterTag; hud('Motion blur…'); await E.renderShutter(); if (refineJob === shutterTag) refineJob = null; return; }
