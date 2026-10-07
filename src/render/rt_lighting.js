@@ -13,8 +13,10 @@
 //   - Path traced: direct light from the full-resolution screen image and a two-bounce diffuse path per sample, one
 //     sample a pass; the renderer accumulates passes into a float buffer (see ShotRenderer.refineRT).
 // Units are the engine's: outgoing = albedo x E, where E is "light arriving" as the body shader counts it
-// (sc x spill + bounce). The screen's radiance per cell is emit(uv) x screenGain, so that at the reference frames the
-// screen's mean colour has the luminance of the fake's single light colour (sc = glowCol).
+// (sc x spill + bounce). The screen's radiance per cell is emit(uv) x screenGain (2.4: at f720-f1000 the screen's mean
+// colour then has the luminance of the fake's single light colour sc = glowCol; tools/rt_eval.js calibrate()), and
+// the screen light is a physical area light (cos x cos / r^2) scaled to equal the fake's spill law on the axis at
+// refDist (0.5 m). Both are look.rtLighting settings.
 // Noise is seeded by (pixel, sample index, frame), so a frame renders the same every time.
 import * as THREE from 'three/webgpu';
 import { Fn, storage, uniform, texture, vec2, vec3, vec4, float, int, uint, max, min, dot, cross, abs, normalize, length, select, sqrt,

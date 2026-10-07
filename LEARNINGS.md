@@ -623,6 +623,86 @@ compare the increments, not the totals. Frames and sheets: `shadows\round2\`.
   and screen-coloured shadows (each patch weighted by what's on screen there).
 - Nodes first built inside an `If` bit again (a condition on `face` broke the off path); the rule from round one holds.
 
+## Spike: Ray-traced lighting (branch `spike-rt-lighting`)
+
+Built on section 9's ray tracer (CPU BVH in storage buffers, stackless traversal in the surface shader). Four Show-menu
+toggles under "Ray-traced lighting (research)", off by default, WebGPU only; renders to disk follow them like the
+shadow toggles. With all of them off the picture is pixel-identical to the branch base (f300 and f720: 0 differing
+pixels). Code: `src/render/rt_lighting.js` (tracer, light terms), `rtLighting()` in `materials.js` (the body shader),
+the glass reflection in `crtMaterial`, `rtPass` / `refineRT` / `post3D` in `shot_renderer.js`; measurements in
+`tools/rt_eval.js` (`stills`, `cost`, `calibrate`; every pass waits for `onSubmittedWorkDone` before the next).
+
+| Toggle | What it does | Render quality (scene pass) | Play quality |
+|---|---|---|---|
+| Screen light + one bounce (GI) | the screen as a physical area light (cos·cos/r²) coloured by its own image (the haze's 20x15 light grid), 16 stratified shadowed samples; plus 8 cosine rays to whatever they hit, each hit lit by one screen sample and re-emitting its albedo. Replaces the fake's direct spill and its `U.bp`/`U.bi` bounce | +22–45 ms | 4 + 2 rays: +5.5–12 ms |
+| Ray-traced AO | 8 cosine rays, occluded within 5 cm (the contact AO's radius); multiplies the lit colour | +7–13 ms | 4 rays: +3–6.5 ms |
+| Reflections (glass, plastic) | 4 jittered mirror rays, Schlick F0 0.04; hits shaded with the fake's unshadowed spill and the ring light, or show the screen image | +5–8 ms | 1 ray: +1.2–1.9 ms |
+| all three | | +32–68 ms | +10–22 ms |
+| Path-traced still | per pass: 4 full-resolution screen samples + a 2-bounce diffuse path; passes average into a half-float running mean that the lens reads; the editor adds a pass while idle (up to 256) | 5–12 ms a sample, 13–20 ms a refine pass (with the depth of field again) | n/a |
+
+RTX 4090, headless Chrome, medians of 5. The GPU was shared during the timings (another job showed 11–65% in
+`nvidia-smi`; the haze march read 178–181 ms instead of 108–134), so read the increments. CPU: BVH of 2,516 triangles
+(1,959 nodes, albedo per triangle from its texture) rebuilt in 3–6 ms when something moves. Frames:
+`G:\Claude\Virtual Legacy\Channel\Virtual Shot spike\rt_lighting\stills\` (per key frame: off, contact AO, each
+toggle as one real-time pass and as 16 accumulated passes, the light terms alone, and the path-traced reference);
+`sheets\f*_toggles.jpg` and `sheets\f*_terms.jpg` side by side.
+
+**What it shows about the fake lighting:**
+- **The fake lights the monitor's front; physics doesn't.** The fake's screen light is a point 6% of the glass width in
+  front of it, with a wrap term and a forward lobe floor of 0.3, so the bezel front gets an even glow
+  (`f01000_terms.jpg`, top left). The bezel front lies in the screen's own plane, so a real screen gives it almost
+  nothing; the light goes to the recess lip around the glass instead (clipped white: at 1 cm the lip gets about 7× what
+  a subject at 0.5 m gets) and to things in front of and below the screen.
+- **The screen isn't the fake's colour.** The fake is one red-orange colour (`glowCol` 0.58, 0.33, 0.31 at f420).
+  The screen's actual mean emission is blue-grey at f420 (0.085, 0.105, 0.13: glass tint, grey window chrome, few red
+  lines) and red only from f720 on, as text fills it (0.29, 0.14, 0.16). Coloured by the screen, the keyboard and
+  remote turn white-pink and the pad blue; mean G and B rise 40–100% while R rises 10–50%.
+- **Things below the screen get far more light than the fake gives them.** Matched on the screen's axis at 0.5 m, a
+  physical falloff lights the desk, keyboard, pad and remote much more (f720 mean RGB 20.7, 11.4, 11.4 → 31.5, 22.8,
+  24.3); 22–27% of pixels change by more than 8/255. The red ring light on the remote, the shot's subject at f720, is
+  washed out. So the fake is a mood choice, not an approximation: brightening the screen light to physical levels
+  would need the ring light and the haze re-balanced.
+- **The fake bounce stands in for a room that isn't there.** `U.bp` sits 0.75 m in front of the screen and lights
+  everything facing it softly. A ray-traced bounce comes only from the modelled props: it lights the desk under the
+  monitor, the polaroid, the lower bezel and the recess, and nothing facing the camera. The two terms are of similar
+  size near the monitor and differ in where the light lands (`*_terms.jpg`, bottom row).
+- **One bounce is nearly all of it.** GI at 16 passes vs the path-traced reference (256 samples, two bounces,
+  full-resolution screen): 2.5–5.6% of pixels differ by more than 8/255, means within 1–2%. A single real-time pass is
+  grainy (9–10% of pixels off by more than 8/255 against the reference): it needs accumulation or a denoiser.
+- **AO: ray-traced and screen-space agree; contact AO is stronger.** RT AO changes 1–3.6% of pixels, contact AO
+  4.3–7.2% (it has strength 2 and darkens the haze-free lens output); they differ from each other in 1.3–5.6%. The
+  contact AO is a fair, cheaper stand-in.
+- **Reflections show nothing (0.1–0.35% of pixels).** The glass faces the camera, so it reflects what's behind the
+  camera, and nothing is modelled there; the plastic at F0 0.04 reflects a dark room. The ghost flashes are the only
+  reflections this shot can have unless the room gets geometry.
+
+**three.js / TSL / WebGPU gotchas:**
+- **A multiple-render-target needs its textures named after the MRT outputs** (`output`, `dist`). Unnamed, the
+  fragment output struct comes out empty and every pipeline fails with "structures must have at least one member".
+- **A per-material `Fn(...).setLayout(...)` for the traversal works**: one WGSL function per material instead of an
+  inlined copy per call site (the GI, AO, reflection and path loops call it 6 times). Made per material, not shared,
+  for the binding reasons above.
+- **The first render into a new target format compiles every material again** (about 36 pipelines, ~14 s once).
+- **Half-float accumulation keeps values above 1 that the 8-bit scene buffer clips**, and the depth of field then
+  blooms them. The lens clamps the accumulated image to 0..1 when it reads it.
+- A uniform changed between two renders in one frame (a plain pass for the distance buffer, then the RT pass) takes
+  effect: three submits per `render()`.
+- Read the WebGPU canvas in the same task as the render that drew it; after an `await` it reads black.
+
+**Cost notes:** the body shader has `Discard` (alpha cut-outs), which turns off early depth testing, so every
+overdrawn fragment traces its rays. A depth pre-pass (then depth-equal shading) would cut the scene pass for every RT
+toggle and for section 9's ray-traced shadows.
+
+**Settings and look presets:** `look.rtLighting` in the scene JSON (`screenGain` 2.4, `refDist` 0.5,
+`render`/`play` ray counts, `aoRadius`, `rough`, `plasticF0`, `glassF0`). A named look preset (`look.style`) could
+set e.g. `"physical"` = GI on with these settings, and `"reference"` = path-traced still for checking a fake look;
+the toggles would become the preset's defaults instead of the viewport's.
+
+**Next:** a depth pre-pass; temporal accumulation for Play (reproject + blend, as the PT accumulation does for stills)
+or a denoiser; use the ray-traced terms to re-tune the fake rather than replace it (screen-coloured `sc` per region,
+less light on the bezel front, the bounce point moved under the screen); bake the screen GI for the static props (only
+the remote moves); room geometry if reflections ever matter.
+
 ## Running the spike
 
 ```
