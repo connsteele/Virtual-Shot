@@ -17,7 +17,12 @@ export function makePost(tex) {
     sp: uniform(new THREE.Vector2(.5, .5)), spot: uniform(0), spr: uniform(1), spf: uniform(1),
     px: uniform(new THREE.Vector2(1 / 1920, 1 / 1080)), sc: uniform(1), maxR: uniform(0), rs: uniform(0.5),
   };
-  const srcNode = texture(tex.src), zsNode = texture(tex.zs), lensSrc = texture(tex.lens), cocSrc = texture(tex.coc), finalSrc = texture(tex.final);
+  // tex.alt (optional): a second scene colour the lens reads instead when U.alt is 1 (the ray-traced accumulation)
+  U.alt = uniform(0);
+  const srcTex = texture(tex.src), altTex = tex.alt ? texture(tex.alt) : null;
+  // (clamped to the 0..1 an 8-bit scene buffer holds, so the accumulated mean clips like a single pass would)
+  const srcNode = altTex ? { sample: q => select(U.alt.greaterThan(0.5), clamp(altTex.sample(q), 0, 1), srcTex.sample(q)) } : srcTex;
+  const zsNode = texture(tex.zs), lensSrc = texture(tex.lens), cocSrc = texture(tex.coc), finalSrc = texture(tex.final);
 
   const warp = (q, kk) => {
     const p0 = q.mul(2).sub(1), p = vec2(p0.x.mul(U.aspect), p0.y);

@@ -122,6 +122,17 @@ async function boot() {
       await Promise.all([gpuIdle(), new Promise(r => requestAnimationFrame(r))]);
     }
     refineJob = null; E.quality = 'render'; hud('Render quality');
+    // path-traced still (Show menu): keep adding one sample pass while idle, each after the GPU finished the last
+    // (one pass is well under a second, so no single submit can stall the device)
+    if (E.show.rtPT && shot.rtAccum > 0) {
+      const tok = refineJob = { pt: true }, MAX = E.ptSamples || 256;
+      while (refineJob === tok && shot.rtAccum < MAX) {
+        perf.begin('refine'); const n = shot.refineRT(); perf.end(); if (!n) break;
+        hud(`Path tracing ${n}/${MAX}`);
+        await Promise.all([gpuIdle(), new Promise(r => requestAnimationFrame(r))]);
+      }
+      if (refineJob === tok) { refineJob = null; hud(`Path traced (${shot.rtAccum} samples)`); }
+    }
   };
   // frame-rate cap per view (0 = every display refresh): frames are spaced 1/cap apart on average, on refresh boundaries
   let nextAt = 0;

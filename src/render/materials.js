@@ -1,7 +1,7 @@
 // TSL materials: the Black Page engine's GLSL rewritten as three.js node graphs (WebGPU first, WebGL2 fallback).
 import * as THREE from 'three/webgpu';
 import { Fn, uniform, uniformArray, texture, uv, vec2, vec3, vec4, float, mix, clamp, max, min, dot, normalize, length, exp, sin, abs, pow,
-  positionWorld, normalWorldGeometry, If, Discard, select, mrt } from 'three/tsl';
+  positionWorld, normalWorldGeometry, cameraPosition, If, Discard, select, mrt } from 'three/tsl';
 
 /** smoothstep that also works with edge0 > edge1 (GLSL drivers allow it; WGSL's builtin does not promise it). */
 export const sstep = (e0, e1, x) => { const t = clamp(float(x).sub(e0).div(float(e1).sub(e0)), 0, 1); return t.mul(t).mul(float(3).sub(t.mul(2))); };
@@ -19,7 +19,7 @@ export function makeLightUniforms() {
 /** The engine's body shader: the CRT is the light (soft forward lobe, distance falloff), a bounce off the unseen room,
  *  the power LED's teal spill (and its texel glowing), emissive texture, the ringing remote's red light, and an
  *  override colour for the remote's LEDs. Unlit otherwise; no colour management (values are display-referred). */
-export function bodyMaterial(U, { map = null, emissiveMap = null, ledRect = [2, 2, 2, 2], ov = null, scMul = 1, blMul = 1, rawLed = false, sh = null, rsh = null, rts = null }) {
+export function bodyMaterial(U, { map = null, emissiveMap = null, ledRect = [2, 2, 2, 2], ov = null, scMul = 1, blMul = 1, rawLed = false, sh = null, rsh = null, rts = null, rtl = null }) {
   const m = new THREE.MeshBasicNodeMaterial({ side: THREE.DoubleSide });
   const lr = vec4(...ledRect);
   m.outputNode = Fn(() => {
@@ -44,7 +44,8 @@ export function bodyMaterial(U, { map = null, emissiveMap = null, ledRect = [2, 
     const Lb0 = U.bp.sub(P), db = length(Lb0), Lb = Lb0.div(max(db, 1e-5));
     const bnc = U.bi.mul(max(dot(n, Lb), 0)).div(db.mul(db).mul(1.5).add(1));
     const sc = scMul === 1 ? U.sc : U.sc.mul(scMul), bl = blMul === 1 ? U.bl : U.bl.mul(blMul);
-    const col = c.rgb.mul(fill.add(sc.mul(spill.add(bnc)))).mul(bl).toVar();
+    const lit = c.rgb.mul(fill.add(sc.mul(spill.add(bnc)))).mul(bl).toVar();
+    const col = lit.toVar();
     // power LED: teal spill on the plastic, and the LED texel itself glows
     const lp = rawLed ? U.lpRaw : U.lp, dl = lp.sub(P), dd = length(dl);
     col.addAssign(c.rgb.mul(U.lc).mul(U.li).mul(0.9).mul(exp(dd.mul(dd).negate().div(U.lrad.mul(U.lrad)))).mul(max(dot(n, dl.div(max(dd, 1e-5))), 0.25)));
@@ -60,16 +61,44 @@ export function bodyMaterial(U, { map = null, emissiveMap = null, ledRect = [2, 
       ring = ring.mul(rv);
     }
     col.addAssign(ring);
+    if (rtl) rtLighting(rtl, U, { c, n, P, fill, sc, bl, lit, col, scMul, spill, bnc });
     const out = ov ? mix(col, ov.xyz, ov.w) : col;
     return vec4(out, 1);
   })();
   return m;
 }
 
+/** Ray-traced lighting (Show menu, off by default; see rt_lighting.js). Runs after the body shader has built `col`;
+ *  with every RT toggle off nothing here runs, so the default picture is unchanged. Everything this reads from the body
+ *  shader was built before the If (a node first built inside an If is only assigned when the branch runs). */
+function rtLighting({ R, emitTex, hiTex }, U, { c, n, P, fill, sc, bl, lit, col, scMul, spill, bnc }) {
+  const RT = R.U, K = R.nodes({ emitTex, hiTex }), rnd = K.rng(1);
+  const V = normalize(cameraPosition.sub(P)).toVar(), nf = select(dot(n, V).lessThan(0), n.negate(), n).toVar();
+  const x = P.add(nf.mul(0.002)).toVar(), alb = c.rgb.toVar();
+  If(RT.any.greaterThan(0.5), () => {
+    // light arriving (the fake's units): ray-traced screen light (coloured, shadowed) + one bounce, or a path-traced sample
+    const E = vec3(0).toVar(), Ed = vec3(0).toVar(), Eb = vec3(0).toVar();
+    If(RT.pt.greaterThan(0.5), () => { Ed.assign(K.path(U, x, n, rnd).mul(scMul)); E.assign(Ed); })
+      .ElseIf(RT.gi.greaterThan(0.5), () => {
+        Ed.assign(K.direct(U, x, n, RT.nDirect, rnd).mul(scMul)); Eb.assign(K.bounce(U, x, nf, RT.nBounce, rnd).mul(scMul)); E.assign(Ed.add(Eb)); });
+    If(RT.gi.add(RT.pt).greaterThan(0.5), () => { col.assign(col.sub(lit).add(alb.mul(fill.add(E)).mul(bl))); });
+    const occ = float(1).toVar(), refl = vec3(0).toVar();
+    If(RT.ao.greaterThan(0.5).and(RT.pt.lessThan(0.5)), () => { occ.assign(K.ao(x, nf, RT.nAO, rnd)); col.mulAssign(occ); });
+    If(RT.refl.greaterThan(0.5), () => { refl.assign(K.reflect(U, x, nf, V, RT.plasticF0, RT.nRefl, rnd)); col.addAssign(refl); });
+    // debug views: 1 RT direct light, 2 RT bounce light (both x albedo x brightness), 3 AO, 4 reflections,
+    // 5 the fake's direct screen spill, 6 the fake's bounce term (U.bp / U.bi), for comparison
+    If(RT.debug.greaterThan(0.5), () => {
+      const fakeD = alb.mul(sc.mul(spill)).mul(bl), fakeB = alb.mul(sc.mul(bnc)).mul(bl);
+      col.assign(select(RT.debug.lessThan(1.5), alb.mul(Ed).mul(bl), select(RT.debug.lessThan(2.5), alb.mul(Eb).mul(bl), select(RT.debug.lessThan(3.5), vec3(occ),
+        select(RT.debug.lessThan(4.5), refl, select(RT.debug.lessThan(5.5), fakeD, fakeB))))));
+    });
+  });
+}
+
 /** The CRT screen: chat texture cropped to the glass, barrel bulge, RGB fringe, scanlines, vignette, glass tint,
  *  and up to four ghost reflections on the glass surface. Returns the material and `color(uvNode)`, the same shader
  *  as a function of the glass mesh's uv (used flat, in glass uv space, to light the haze). */
-export function crtMaterial({ chatTex, ghostTex, ub }) {
+export function crtMaterial({ chatTex, ghostTex, ub, rtl = null, LU = null }) {
   const S = {
     fx: uniform(0), time: uniform(0), ub: uniform(new THREE.Vector4(...ub)),
     gr: uniformArray([0, 1, 2, 3].map(() => new THREE.Vector4(0, 0, 1, 1))),
@@ -110,7 +139,17 @@ export function crtMaterial({ chatTex, ghostTex, ub }) {
     return vec4(select(outside, vec3(0), col), 1);
   };
   const m = new THREE.MeshBasicNodeMaterial({ side: THREE.DoubleSide });
-  m.outputNode = Fn(() => color(uv()))();
+  m.outputNode = rtl ? Fn(() => {
+    const o = color(uv()).toVar();
+    // ray-traced reflections on the glass (Show menu, off by default): what's in front of the screen, Fresnel-weighted
+    const K = rtl.R.nodes(rtl), rnd = K.rng(2), RT = rtl.R.U, P = positionWorld.toVar();
+    const V = normalize(cameraPosition.sub(P)).toVar(), n = select(dot(RT.gn, V).lessThan(0), RT.gn.negate(), RT.gn).toVar();
+    If(RT.refl.greaterThan(0.5), () => {
+      const r = K.reflect(LU, P.add(n.mul(0.003)), n, V, RT.glassF0, RT.nRefl, rnd, true).mul(S.fx);
+      o.assign(vec4(select(RT.debug.greaterThan(3.5), r, o.rgb.add(r)), 1));
+    });
+    return o;
+  })() : Fn(() => color(uv()))();
   m.userData.S = S; m.userData.color = color;
   return m;
 }

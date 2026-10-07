@@ -1,7 +1,7 @@
 // Builds a three.js scene from the scene document and renders evaluated frames with the Black Page look.
 // WebGPURenderer (falls back to WebGL2 by itself) with TSL materials; no colour management, like the engine.
 import * as THREE from 'three/webgpu';
-import { mrt, output, vec2, vec4, positionWorld, cameraPosition, uniform, uv, Fn } from 'three/tsl';
+import { mrt, output, vec2, vec4, positionWorld, cameraPosition, uniform, uv, Fn, texture, mix, select } from 'three/tsl';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { bodyMaterial, crtMaterial, glowMaterial, makeLightUniforms } from './materials.js';
 import { makePost } from './post.js';
@@ -10,6 +10,7 @@ import { makeScreenShadows, makePointShadows } from './shadows.js';
 import { makeAO } from './ao.js';
 import { makeHazeShadow } from './haze_shadow.js';
 import { makeRTShadows } from './rt_shadows.js';
+import { makeRTLighting } from './rt_lighting.js';
 import { makeComposite, makeHazeMeter, makeEmitAverage, flatScreenQuad } from './final_comp.js';
 import { indexDoc } from '../core/evaluate.js';
 import { add, scl, xf, nrm, trsOf } from '../core/vec.js';
@@ -25,9 +26,10 @@ export const assetUrl = ref => {
 // ImageBitmap, not <img>.decode(): decode() never settles while the tab is hidden, and renders run in background tabs.
 const loadImage = async src => createImageBitmap(await (await fetch(src)).blob(), { premultiplyAlpha: 'none', colorSpaceConversion: 'none' });
 /** Parts of the look the editor can turn off in its viewport (all on for renders). */
-export const SHOW = { haze: true, dof: true, lens: true, glows: true, ghosts: true, pops: true, shafts: false, softShadows: false, contact: false, hazeShadow: false, rtShadows: false };
-/** The shadow toggles (research): off by default; renders to disk follow the viewport's choice. */
-export const SHADOW_KEYS = ['shafts', 'softShadows', 'contact', 'hazeShadow', 'rtShadows'];
+export const SHOW = { haze: true, dof: true, lens: true, glows: true, ghosts: true, pops: true, shafts: false, softShadows: false, contact: false, hazeShadow: false, rtShadows: false,
+  rtGI: false, rtAO: false, rtRefl: false, rtPT: false };
+/** The shadow and ray-traced lighting toggles (research): off by default; renders to disk follow the viewport's choice. */
+export const SHADOW_KEYS = ['shafts', 'softShadows', 'contact', 'hazeShadow', 'rtShadows', 'rtGI', 'rtAO', 'rtRefl', 'rtPT'];
 /** Forward, right and up of an evaluated camera (eye, target, up). */
 const camBasis = c => {
   const f = nrm(c.target.map((v, i) => v - c.eye[i])), rr = nrm([f[1] * c.up[2] - f[2] * c.up[1], f[2] * c.up[0] - f[0] * c.up[2], f[0] * c.up[1] - f[1] * c.up[0]]);
@@ -83,6 +85,12 @@ export class ShotRenderer {
     const sh = this.shadows = makeScreenShadows(doc.look.shadows?.screen), rsh = this.ringShadows = makePointShadows(doc.look.shadows?.ring);
     // ray tracing reads storage buffers in the surface shader: WebGPU only
     const rts = this.rtShadows = this.forceWebGL ? null : makeRTShadows();
+    // ray-traced lighting (GI, AO, reflections, path-traced stills): the same tracer, lit by the screen's light grid
+    const rt = (w, h, o = {}) => new THREE.RenderTarget(w, h, { depthBuffer: false, generateMipmaps: false, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, type: THREE.UnsignedByteType, ...o });
+    const HZ0 = doc.look.haze;
+    if (HZ0) { const [gx, gy] = HZ0.grid; this.emitHiRT = rt(gx * 32, gy * 32); this.emitRT = rt(gx, gy, { type: THREE.HalfFloatType }); }   // linear: the Play grid samples between cells
+    const rtl = this.rtl = this.forceWebGL || !HZ0 ? null : makeRTLighting({ look: doc.look.rtLighting });
+    const rtlOpt = rtl ? { R: rtl, emitTex: this.emitRT.texture, hiTex: this.emitHiRT.texture } : null;
     const ledRect = ix.obj.led.texelRect, ledTargets = new Set(ix.obj.led.appliesTo || []);
     this.ledParts = []; this.placed = {};
     for (const o of doc.objects) {
@@ -106,7 +114,7 @@ export class ShotRenderer {
         if (isScreen) {
           const uvA = geom.attributes.uv; let u0 = [1e9, 1e9], u1 = [-1e9, -1e9];
           for (let i = 0; i < uvA.count; i++) { u0 = [Math.min(u0[0], uvA.getX(i)), Math.min(u0[1], uvA.getY(i))]; u1 = [Math.max(u1[0], uvA.getX(i)), Math.max(u1[1], uvA.getY(i))]; }
-          mesh.material = this.crt = crtMaterial({ chatTex, ghostTex, ub: [...u0, ...u1] }); this.crtMesh = mesh;
+          mesh.material = this.crt = crtMaterial({ chatTex, ghostTex, ub: [...u0, ...u1], rtl: rtlOpt, LU: U }); this.crtMesh = mesh;
           this.screenUB = [...u0, ...u1];
           // glass uv -> world (least squares over the primitive's vertices): where each part of the image emits from
           const n = pos.count, Mw = mesh.matrixWorld; let S11 = 0, Su = 0, Sv = 0, Suu = 0, Suv = 0, Svv = 0; const R = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
@@ -121,7 +129,8 @@ export class ShotRenderer {
         }
         const isLed = ledRe && ledRe.test(nodeName);
         const ov = isLed ? uniform(new THREE.Vector4(0, 0, 0, 0)) : null;
-        mesh.material = bodyMaterial(U, { map: src.map, emissiveMap: src.emissiveMap, ledRect: ledTargets.has(o.id) ? ledRect : [2, 2, 2, 2], ov, sh, rsh: o.ring ? null : rsh, rts });
+        mesh.material = bodyMaterial(U, { map: src.map, emissiveMap: src.emissiveMap, ledRect: ledTargets.has(o.id) ? ledRect : [2, 2, 2, 2], ov, sh, rsh: o.ring ? null : rsh, rts, rtl: rtlOpt });
+        mesh.userData.rt = { map: src.map, mul: 1 };   // albedo for rays that hit it
         if (isLed) this.ledParts.push({ mesh, ov, c0: a0.map((v, c) => (v + a1[c]) / 2) });
       }
       const M = Array.from(root.matrix.elements), ctrLocal = mn.map((v, c) => (v + mx[c]) / 2);
@@ -140,7 +149,8 @@ export class ShotRenderer {
     for (const o of doc.objects.filter(o => o.type === 'card')) {
       const im = await loadImage(assetUrl(doc.assets[o.texture])), tx = new THREE.Texture(im);
       Object.assign(tx, { flipY: false, generateMipmaps: false, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, colorSpace: THREE.NoColorSpace, needsUpdate: true });
-      const mesh = new THREE.Mesh(quad, bodyMaterial(U, { map: tx, scMul: 1.15, blMul: o.brightness || 1.4, rawLed: true, sh, rsh, rts }));
+      const mesh = new THREE.Mesh(quad, bodyMaterial(U, { map: tx, scMul: 1.15, blMul: o.brightness || 1.4, rawLed: true, sh, rsh, rts, rtl: rtlOpt }));
+      mesh.userData.rt = { map: tx, mul: 1.15 * (o.brightness || 1.4) };
       mesh.matrixAutoUpdate = false; mesh.matrix.copy(m4(trsOf(o.transform))); mesh.userData.docId = o.id; this.placed[o.id] = mesh; scene.add(mesh);
     }
     // glows: four for the ringing LEDs, one for the power LED
@@ -148,7 +158,6 @@ export class ShotRenderer {
     this.glows = [0, 1, 2, 3, 4].map(() => { const m = new THREE.Mesh(plane, glowMaterial()); m.matrixAutoUpdate = false; m.frustumCulled = false; m.visible = false; scene.add(m); return m; });
 
     // render targets: scene (MSAA, colour + distance), lens colour, circle of confusion, final
-    const rt = (w, h, o = {}) => new THREE.RenderTarget(w, h, { depthBuffer: false, generateMipmaps: false, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, type: THREE.UnsignedByteType, ...o });
     this.sceneRT = new THREE.RenderTarget(this.W, this.H, { count: 2, samples: 4, depthBuffer: true, type: THREE.UnsignedByteType, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, generateMipmaps: false });
     this.sceneRT.textures[0].name = 'output';
     Object.assign(this.sceneRT.textures[1], { name: 'dist', type: THREE.HalfFloatType, format: THREE.RGFormat, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter });
@@ -160,7 +169,19 @@ export class ShotRenderer {
     this.sceneMRT = mrt({ output, dist: vec4(positionWorld.distance(cameraPosition), 1, 0, 1) }).setBlendMode('dist', new THREE.BlendMode(THREE.MaterialBlending));
     this.aoRT = rt(Math.round(this.W / 2), Math.round(this.H / 2), { type: THREE.HalfFloatType, format: THREE.RedFormat });
     this.ao = makeAO({ distTex: this.sceneRT.textures[1], aoTex: this.aoRT.texture, look: doc.look.shadows?.contact });
-    this.post = makePost({ src: this.sceneRT.textures[0], zs: this.sceneRT.textures[1], lens: this.lensRT.texture, coc: this.cocRT.texture, final: this.finalRT.texture });
+    // ray-traced lighting accumulation: the RT scene pass (float), and the running mean the lens reads instead of the scene
+    if (rtl) {
+      this.ptRT = new THREE.RenderTarget(this.W, this.H, { count: 2, samples: 4, depthBuffer: true, type: THREE.HalfFloatType, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, generateMipmaps: false });
+      this.ptRT.textures[0].name = 'output';   // MRT outputs bind to textures by name
+      Object.assign(this.ptRT.textures[1], { name: 'dist', type: THREE.HalfFloatType, format: THREE.RGFormat, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter });
+      this.accA = rt(this.W, this.H, { type: THREE.HalfFloatType }); this.accB = rt(this.W, this.H, { type: THREE.HalfFloatType });
+      const qm = node => { const m = new THREE.NodeMaterial(); m.fragmentNode = node; m.depthTest = false; m.depthWrite = false; return new THREE.QuadMesh(m); };
+      this.accW = uniform(1);
+      const cur = texture(this.ptRT.textures[0]), prev = texture(this.accA.texture), prevB = texture(this.accB.texture);
+      this.accQuad = qm(Fn(() => { const a = cur.sample(uv()); return select(this.accW.greaterThanEqual(1), vec4(a.rgb, 1), vec4(mix(prev.sample(uv()).rgb, a.rgb, this.accW), 1)); })());
+      this.accCopy = qm(Fn(() => prevB.sample(uv()))());
+    }
+    this.post = makePost({ src: this.sceneRT.textures[0], zs: this.sceneRT.textures[1], lens: this.lensRT.texture, coc: this.cocRT.texture, final: this.finalRT.texture, alt: rtl ? this.accA.texture : null });
 
     // final look: haze, layers and the composite (doc.look.haze, doc.layers)
     const tex2d = c => { const t = new THREE.CanvasTexture(c || document.createElement('canvas'));
@@ -170,8 +191,6 @@ export class ShotRenderer {
     this.hazeRT = rt(Math.round(this.W * 0.75), Math.round(this.H * 0.75), { type: THREE.HalfFloatType });
     if (HZ) {
       const [gx, gy] = HZ.grid;
-      this.emitHiRT = rt(gx * 32, gy * 32);
-      this.emitRT = rt(gx, gy, { type: THREE.HalfFloatType });   // linear: the Play grid samples between cells
       const ub = this.screenUB, crtColor = this.crt.userData.color;
       this.emitFlat = flatScreenQuad(Fn(() => crtColor(vec2(ub[0], ub[1]).add(uv().mul(vec2(ub[2] - ub[0], ub[3] - ub[1])))))());
       this.emitAvg = makeEmitAverage({ hiTex: this.emitHiRT.texture, gx, gy });
@@ -309,6 +328,20 @@ export class ShotRenderer {
     const RS = this.ringShadows; RS.U.shafts.value = SH.U.shafts.value; RS.U.surface.value = SH.U.surface.value;
     const RT = this.rtShadows; if (RT) { RT.U.on.value = show.rtShadows ? 1 : 0; RT.U.frame.value = st.frame || 0; RT.U.rays.value = this.quality === 'play' ? 4 : 16;
       if (show.rtShadows) { this.mark('rt shadows (cpu bvh)'); RT.update(Object.values(this.placed), [this.crtMesh, ...this.glows], this.glassMap); } }
+    // ray-traced lighting (Show menu, off by default)
+    const RL = this.rtl, rtOn = !!(RL && (show.rtGI || show.rtAO || show.rtRefl || show.rtPT));
+    if (RL) {
+      RL.U.gi.value = show.rtGI ? 1 : 0; RL.U.ao.value = show.rtAO ? 1 : 0; RL.U.refl.value = show.rtRefl ? 1 : 0; RL.U.pt.value = show.rtPT ? 1 : 0;
+      RL.U.any.value = rtOn ? 1 : 0; RL.U.frame.value = st.frame || 0; RL.U.sample.value = 0; RL.setQuality(this.quality);
+    }
+    if (rtOn) {
+      this.mark('rt lighting (cpu bvh)'); RL.update(Object.values(this.placed), this.crtMesh, this.glassMap);
+      if (this.emitFlat) {   // this frame's screen light grid (the haze draws it again later)
+        this.emitAvg.U.screenLight.value = this.doc.look.haze.screenLight ?? 100; RL.U.screenLight.value = this.emitAvg.U.screenLight.value;
+        this.mark('rt screen light grid'); r.setRenderTarget(this.emitHiRT); this.emitFlat.render(r); r.setRenderTarget(this.emitRT); this.emitAvg.quad.render(r);
+      }
+    }
+    const accum = rtOn && (show.rtPT || RL.accumulate); this.rtAccum = accum ? 0 : -1;
     if (show.shafts || show.softShadows) {
       const casters = Object.values(this.placed), mark = n => this.mark(n);
       SH.update(r, this.scene, { gm: this.glassMap, n: g.n, hide: [this.crtMesh, ...this.glows], casters, mark });
@@ -317,7 +350,38 @@ export class ShotRenderer {
     // scene pass: the buffer grows with the lens overscan so the centre stays sharp
     const scale = c.k > 1e-4 ? Math.min(2, Math.ceil(c.ov * 2) / 2) : 1, sw = Math.round(this.W * scale), sh = Math.round(this.H * scale);
     if (this.sceneRT.width !== sw || this.sceneRT.height !== sh) this.sceneRT.setSize(sw, sh);
+    if (accum) RL.U.any.value = 0;   // accumulating: a plain pass for the distance buffer (haze, focus), then the RT pass
     this.mark('scene'); r.setMRT(this.sceneMRT); r.setRenderTarget(this.sceneRT); r.clear(); r.render(this.scene, cam); r.setMRT(null);
+    if (accum) { RL.U.any.value = 1; this.rtPass(); }
+    if (RL) post.U.alt.value = accum ? 1 : 0;
+    this.postState = { c, sw, sh, show, st };
+    this.post3D();
+  }
+
+  /** One ray-traced pass into ptRT, folded into the running mean (accA) that the lens reads. */
+  rtPass() {
+    const r = this.renderer, n = this.rtAccum, w = this.sceneRT.width, h = this.sceneRT.height;
+    for (const t of [this.ptRT, this.accA, this.accB]) if (t.width !== w || t.height !== h) t.setSize(w, h);
+    this.rtl.U.sample.value = n;
+    this.mark(n === 0 ? 'rt scene' : 'rt scene (refine)'); r.setMRT(this.sceneMRT); r.setRenderTarget(this.ptRT); r.clear(); r.render(this.scene, this.camera); r.setMRT(null);
+    this.accW.value = 1 / (n + 1);
+    this.mark('rt accumulate'); r.setRenderTarget(this.accB); this.accQuad.render(r); r.setRenderTarget(this.accA); this.accCopy.render(r);
+    this.rtAccum = n + 1;
+  }
+
+  /** Progressive refinement of the ray-traced lighting while idle: one more sample pass, then lens, focus and the
+   *  composite again (the haze from the last full render is reused). Returns the sample count, or false when nothing
+   *  accumulates. */
+  refineRT() {
+    if (!this.rtl || this.rtAccum < 0 || !this.postState) return false;
+    this.rtPass(); this.post3D();
+    this.mark('composite'); this.renderer.setRenderTarget(null); this.comp.quad.render(this.renderer);
+    return this.rtAccum;
+  }
+
+  /** Lens, contact shadows, circle of confusion and depth of field from the scene buffer (uniforms set by render3D). */
+  post3D() {
+    const r = this.renderer, post = this.post, { c, sw, sh, show, st } = this.postState;
     // lens + circle of confusion
     const P = post.U, F = st.focus, D = !!(show.dof && F && (F.px > 0 || F.edge > 0 || F.spot > 0));
     P.k.value = c.k; P.aspect.value = this.W / this.H; P.sq.value = c.squint;

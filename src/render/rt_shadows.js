@@ -10,8 +10,9 @@ import { storage, uniform, vec3, float, int, uint, max, min, dot, cross, abs, se
 
 const LEAF = 4;
 
-/** Triangles (world space) -> flattened BVH. Returns { nodes: Float32Array (2 vec4 per node), tris: Float32Array (3 vec4). */
-function buildBVH(tri) {   // tri: Float32Array, 9 floats per triangle
+/** Triangles (world space) -> flattened BVH. Returns { nodes: Float32Array (2 vec4 per node), tris: Float32Array (3 vec4),
+ *  order: the source triangle of each stored triangle } (shared with rt_lighting.js). */
+export function buildBVH(tri) {   // tri: Float32Array, 9 floats per triangle
   const n = tri.length / 9, idx = Array.from({ length: n }, (_, i) => i);
   const c = new Float32Array(n * 3), bb = new Float32Array(n * 6);
   for (let i = 0; i < n; i++) for (let a = 0; a < 3; a++) {
@@ -36,7 +37,7 @@ function buildBVH(tri) {   // tri: Float32Array, 9 floats per triangle
   const tris = new Float32Array(Math.max(1, n) * 12);
   order.forEach((t, k) => { const v0 = [0, 1, 2].map(a => tri[t * 9 + a]), v1 = [0, 1, 2].map(a => tri[t * 9 + 3 + a]), v2 = [0, 1, 2].map(a => tri[t * 9 + 6 + a]);
     tris.set([...v0, 0, ...v1.map((x, a) => x - v0[a]), 0, ...v2.map((x, a) => x - v0[a]), 0], k * 12); });
-  return { nodes, tris, nodeCount: out.length, triCount: n };
+  return { nodes, tris, order, nodeCount: out.length, triCount: n };
 }
 
 export function makeRTShadows({ maxTris = 8192 } = {}) {
