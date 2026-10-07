@@ -815,7 +815,23 @@ focused subject? Should 2D pops sit over the lines (as now) or under them?
 - `sheets\lookdev_line_width.jpg`, `lookdev_tones.jpg`, `lookdev_crease_flat.jpg`, `lookdev_spec_face.jpg`
 - `shot\<variant>\f*.png`, `lookdev\...` full-size; `bitcheck_off\` (identity check: f300, f720 = 0 differing pixels vs `baseline_spike`)
 
-TIMING_PLACEHOLDER
+**GPU cost** (headless Chrome, RTX 4090, behind the lock 11:00–11:02 UTC; medians, warm-up excluded; `research\timing.json`).
+nvidia-smi showed **43–45% utilisation from another job** before and during the run (7% after), so treat these as
+slightly pessimistic; the "off" frames match the build's idle-GPU numbers within 0.1 ms.
+
+| f420 / f720, ms | off | lines before lens (`scene`) | after DOF (`post`) | after haze (`final`) |
+|---|---|---|---|---|
+| Play frame | 5.33 / 5.16 | 5.64 / 5.51 | 5.49 / 5.43 | 5.52 / 5.46 |
+| Render frame | 144.0 / 114.4 | 145.0 / 114.6 | 144.4 / 115.2 | 145.0 / 115.0 |
+| G-buffer | – | 0.03 / 0.04 | 0.03 / 0.04 | 0.03 / 0.04 |
+| Scene pass (toon) | 0.06 / 0.09 | 0.11 / 0.18 | 0.11 / 0.18 | 0.11 / 0.18 |
+| Lines | – | 0.20 | 0.10 | 0.10 |
+
+- The post/final line pass costs **half** the build's: it runs at the output size, not the 2× lens-overscan scene buffer.
+- Line width and `lineCoc` don't change the cost (the tap pattern is fixed: 8 directions × 3 radii); 5 px = 2 px.
+- The toon scene pass is about 0.02–0.04 ms dearer than the build's, because the flat-albedo taps are always compiled in
+  (9 texture taps; `flat 0` still pays for them). Compile them only when `flat > 0` in the real build.
+- Render quality is unchanged within noise: the haze march is ~95% of it.
 
 ## Running the spike
 
