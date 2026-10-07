@@ -4,7 +4,12 @@
 //   GET  /psx/...        PSX Mega Pack GLB folder on E:, read-only, read in place
 //   GET  /wii/...        Astra's Wii Remote folder, read-only
 //   POST /save/<path>    writes the request body under the spike output folder on G: (retries are the client's job)
+//   POST /save-rgba/<path>?w=&h=   raw RGBA8 pixels (top row first), encoded to PNG here
+//   POST /save-idat/<path>?w=&h=   an already filtered + zlib-compressed RGBA8 PNG image stream (the page compresses it
+//                        with CompressionStream); the server only wraps the PNG chunks around it. Frame export history:
+//                        canvas.toBlob ~1 s a frame in a background tab; raw 8 MB uploads ~0.4 s through the browser pane
 import http from 'node:http';
+import zlib from 'node:zlib';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -29,8 +34,53 @@ function safeJoin(root, rel) {
   return p.startsWith(path.resolve(root)) ? p : null;
 }
 
+const pngChunk = (type, data) => { const len = Buffer.alloc(4); len.writeUInt32BE(data.length); const td = Buffer.concat([Buffer.from(type, 'ascii'), data]);
+  const crc = Buffer.alloc(4); crc.writeUInt32BE(zlib.crc32(td) >>> 0); return Buffer.concat([len, td, crc]); };
+function pngFile(w, h, idat) {
+  const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(h, 4); ihdr[8] = 8; ihdr[9] = 6;
+  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), pngChunk('IHDR', ihdr), pngChunk('IDAT', idat), pngChunk('IEND', Buffer.alloc(0))]);
+}
+/** Minimal RGBA8 PNG encoder (Sub filter + zlib on the thread pool, so several frames encode in parallel). */
+async function encodePNG(px, w, h) {
+  const stride = w * 4, raw = Buffer.alloc((stride + 1) * h);
+  for (let y = 0; y < h; y++) {
+    const o = y * (stride + 1), r = y * stride; raw[o] = 1;
+    for (let i = 0; i < stride; i++) raw[o + 1 + i] = (px[r + i] - (i >= 4 ? px[r + i - 4] : 0)) & 255;
+  }
+  const chunk = (type, data) => { const len = Buffer.alloc(4); len.writeUInt32BE(data.length); const td = Buffer.concat([Buffer.from(type, 'ascii'), data]);
+    const crc = Buffer.alloc(4); crc.writeUInt32BE(zlib.crc32(td) >>> 0); return Buffer.concat([len, td, crc]); };
+  const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(h, 4); ihdr[8] = 8; ihdr[9] = 6; ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0;
+  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', ihdr), chunk('IDAT', await new Promise((ok, no) => zlib.deflate(raw, { level: 6 }, (e, b) => e ? no(e) : ok(b)))), chunk('IEND', Buffer.alloc(0))]);
+}
+
 http.createServer((req, res) => {
   const urlPath = req.url.split('?')[0];
+  if (req.method === 'POST' && urlPath.startsWith('/save-idat/')) {
+    const rel = decodeURIComponent(urlPath.slice(11)), q = new URL(req.url, 'http://x').searchParams, w = +q.get('w'), h = +q.get('h');
+    if (!/^[A-Za-z0-9_.\- /]+$/.test(rel) || rel.split('/').some(s => s === '..' || s.startsWith('.')) || !(w > 0 && h > 0)) { res.writeHead(400); return res.end('bad request'); }
+    const chunks = [];
+    req.on('data', c => chunks.push(c));
+    req.on('end', async () => {
+      const dest = path.join(OUT, rel); fs.mkdirSync(path.dirname(dest), { recursive: true });
+      try { await fs.promises.writeFile(dest, pngFile(w, h, Buffer.concat(chunks))); res.writeHead(200); res.end('ok'); }
+      catch (e) { res.writeHead(500); res.end(String(e)); }
+    });
+    return;
+  }
+  if (req.method === 'POST' && urlPath.startsWith('/save-rgba/')) {
+    const rel = decodeURIComponent(urlPath.slice(11)), q = new URL(req.url, 'http://x').searchParams, w = +q.get('w'), h = +q.get('h');
+    if (!/^[A-Za-z0-9_.\- /]+$/.test(rel) || rel.split('/').some(s => s === '..' || s.startsWith('.')) || !(w > 0 && h > 0)) { res.writeHead(400); return res.end('bad request'); }
+    const chunks = [];
+    req.on('data', c => chunks.push(c));
+    req.on('end', async () => {
+      const px = Buffer.concat(chunks);
+      if (px.length !== w * h * 4) { res.writeHead(400); return res.end('size mismatch'); }
+      const dest = path.join(OUT, rel); fs.mkdirSync(path.dirname(dest), { recursive: true });
+      try { await fs.promises.writeFile(dest, await encodePNG(px, w, h)); res.writeHead(200); res.end('ok'); }
+      catch (e) { res.writeHead(500); res.end(String(e)); }
+    });
+    return;
+  }
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Cache-Control', 'no-store');
   if (req.method === 'POST' && urlPath.startsWith('/save/')) {

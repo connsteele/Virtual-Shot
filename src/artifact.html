@@ -1,0 +1,67 @@
+<title>Virtual Shot Spike</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&display=swap">
+<style>
+/* Layout: the 16:9 shot leads, transport under it, then a short readout of what this browser frame allows.
+   Dark-only, following the Virtual Legacy tool look (Black Page Studio). */
+:root {
+  --ink: #161516; --surface: #201F20; --line: #323032; --text: #ECEFEB; --muted: #A6A3A6;
+  --lavender: #C3ACC6; --teal: #3FB5A8; --danger: #E06A66;
+  --sans: Barlow, Bahnschrift, "Segoe UI", system-ui, sans-serif; --mono: ui-monospace, Consolas, monospace;
+  color-scheme: dark;
+}
+html, body { background: var(--ink); color: var(--text); }
+body { font: 16px/1.5 var(--sans); }
+.page { max-width: 1200px; margin: 0 auto; padding-inline: 16px; padding-block: 20px 40px; display: flex; flex-direction: column; gap: 14px; }
+header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 6px 16px; }
+h1 { margin: 0; font-size: clamp(24px, 4vw, 34px); font-weight: 600; text-wrap: balance; }
+.label { font-size: 12px; letter-spacing: .12em; text-transform: uppercase; color: var(--lavender); }
+#info { color: var(--muted); font-size: 14px; min-width: 0; }
+.stage { position: relative; width: 100%; max-width: 100%; aspect-ratio: 16 / 9; background: #000; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.row { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; }
+input[type=range] { flex: 1 1 240px; min-width: 0; accent-color: var(--lavender); }
+button { font: 600 15px var(--sans); color: var(--text); background: transparent; border: 1px solid var(--muted); border-radius: 2px; padding: 8px 16px; cursor: pointer; }
+button.primary { background: var(--lavender); border-color: var(--lavender); color: var(--ink); }
+button:focus-visible, input:focus-visible { outline: 2px solid var(--lavender); outline-offset: 2px; }
+.time { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 15px; min-width: 140px; }
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.panel h2 { margin: 0; font-size: 17px; font-weight: 600; }
+dl { margin: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 8px 20px; }
+dl div { display: flex; flex-direction: column; min-width: 0; }
+dt { font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+dd { margin: 0; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+#folderResult { color: var(--teal); font-size: 14px; overflow-wrap: anywhere; }
+#status { color: var(--teal); font-size: 14px; }
+</style>
+
+<div class="page">
+  <header>
+    <div><div class="label">Throwaway spike · scene document + time core + three.js r186</div><h1>Virtual Shot Spike</h1></div>
+    <div id="info">Loading the Black Page scene…</div>
+  </header>
+  <div class="stage">
+    <canvas id="gpu" width="1920" height="1080" aria-label="3D shot"></canvas>
+    <canvas id="flat" width="1920" height="1080" aria-label="Chat layer"></canvas>
+  </div>
+  <div class="row">
+    <button class="primary" id="play" type="button">Play</button>
+    <input type="range" id="scrub" min="0" max="1175" step="1" value="300" aria-label="Frame">
+    <span class="time" id="time">f 300 · 5.000 s</span>
+    <span id="status" role="status"></span>
+  </div>
+  <section class="panel" aria-labelledby="diagTitle">
+    <h2 id="diagTitle">What this artifact frame allows</h2>
+    <dl id="diag"><div><dt>Checks</dt><dd>Running after the scene loads…</dd></div></dl>
+    <div class="row"><button id="tryFolder" type="button">Try writing frames to a folder</button><span id="folderResult" role="status"></span></div>
+  </section>
+</div>
+<script>window.VS_CONFIG = { scene: 'scene.json', imgTextures: true };</script>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.webgpu.js",
+  "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.webgpu.js",
+  "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.tsl.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+} }
+</script>
+<script type="module" src="src/app.js"></script>

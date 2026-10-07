@@ -8,25 +8,29 @@ import { makePost } from './post.js';
 import { indexDoc } from '../core/evaluate.js';
 import { add, scl, xf, nrm, trsOf } from '../core/vec.js';
 
-/** Asset key -> URL on the dev server (psx:, wii:, bp: are read-only mounts of the original folders). */
+/** Asset reference -> URL. psx:, wii:, bp: are read-only mounts of the original folders on the dev server;
+ *  rel: is relative to the page (the artifact build); data: passes through. */
 export const assetUrl = ref => {
+  if (ref.startsWith('data:')) return ref;
   const [ns, ...rest] = ref.split(':'), p = rest.join(':').split('/').map(encodeURIComponent).join('/');
+  if (ns === 'rel') return p;
   return ({ psx: '/psx/', wii: '/wii/', bp: '/bp/' }[ns] || '/') + p;
 };
-const loadImage = async src => { const im = new Image(); im.src = src; await im.decode(); return im; };
+// ImageBitmap, not <img>.decode(): decode() never settles while the tab is hidden, and renders run in background tabs.
+const loadImage = async src => createImageBitmap(await (await fetch(src)).blob(), { premultiplyAlpha: 'none', colorSpaceConversion: 'none' });
 const m4 = a => new THREE.Matrix4().fromArray(Array.from(a));
 const v3 = a => new THREE.Vector3(...a);
 
 export class ShotRenderer {
-  constructor(canvas, doc, { forceWebGL = false } = {}) {
-    this.canvas = canvas; this.doc = doc; this.ix = indexDoc(doc); this.forceWebGL = forceWebGL;
+  constructor(canvas, doc, { forceWebGL = false, trackTimestamp = false } = {}) {
+    this.canvas = canvas; this.doc = doc; this.ix = indexDoc(doc); this.forceWebGL = forceWebGL; this.trackTimestamp = trackTimestamp;
     this.W = doc.output.width; this.H = doc.output.height;
   }
 
   async init(chatCanvas) {
     const { doc, ix } = this;
     THREE.ColorManagement.enabled = false;
-    const r = this.renderer = new THREE.WebGPURenderer({ canvas: this.canvas, antialias: false, alpha: false, forceWebGL: this.forceWebGL });
+    const r = this.renderer = new THREE.WebGPURenderer({ canvas: this.canvas, antialias: false, alpha: false, forceWebGL: this.forceWebGL, trackTimestamp: this.trackTimestamp });
     r.setPixelRatio(1); r.setSize(this.W, this.H, false);
     r.outputColorSpace = THREE.LinearSRGBColorSpace; r.toneMapping = THREE.NoToneMapping;
     r.setClearColor(0x000000, 1);
@@ -51,11 +55,20 @@ export class ShotRenderer {
     Object.assign(ghostTex, { flipY: false, generateMipmaps: false, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, colorSpace: THREE.NoColorSpace });
 
     const loader = new GLTFLoader();
+    // Artifacts don't serve .glb, so the artifact build ships models as base64 text. Their embedded textures then load
+    // through blob: URLs; <img> (TextureLoader) is used there because fetch() of a blob: URL may be refused by the CSP.
+    if (window.VS_CONFIG?.imgTextures) loader.register(parser => { parser.textureLoader = new THREE.TextureLoader(parser.options.manager); return { name: 'VS_img_textures' }; });
+    const loadModel = async ref => {
+      const url = assetUrl(ref);
+      if (!url.endsWith('.glb.txt')) return loader.loadAsync(url);
+      const bin = Uint8Array.from(atob((await (await fetch(url)).text()).trim()), c => c.charCodeAt(0));
+      return loader.parseAsync(bin.buffer, '');
+    };
     const ledRect = ix.obj.led.texelRect, ledTargets = new Set(ix.obj.led.appliesTo || []);
     this.ledParts = [];
     for (const o of doc.objects) {
       if (o.type !== 'model') continue;
-      const gltf = await loader.loadAsync(assetUrl(doc.assets[o.asset]));
+      const gltf = await loadModel(doc.assets[o.asset]);
       const root = gltf.scene; root.matrixAutoUpdate = false; root.matrix.copy(m4(trsOf(o.transform))); root.userData.base = root.matrix.clone();
       root.updateMatrixWorld(true);
       const ledRe = o.ledParts ? new RegExp(o.ledParts, 'i') : null;
@@ -168,9 +181,13 @@ export class ShotRenderer {
     r.setRenderTarget(null); post.quads.blit.render(r);
   }
 
-  /** RGBA8 pixels of the last frame (top row first). */
+  /** RGBA8 pixels of the last frame (top row first). The WebGL2 backend reads rows bottom-up, WebGPU top-down. */
   async readPixels() {
     const px = await this.renderer.readRenderTargetPixelsAsync(this.finalRT, 0, 0, this.W, this.H);
-    return new Uint8ClampedArray(px.buffer, px.byteOffset, this.W * this.H * 4);
+    const out = new Uint8ClampedArray(px.buffer, px.byteOffset, this.W * this.H * 4);
+    if (this.backend === 'WebGPU') return out;
+    const flipped = new Uint8ClampedArray(out.length), row = this.W * 4;
+    for (let y = 0; y < this.H; y++) flipped.set(out.subarray((this.H - 1 - y) * row, (this.H - y) * row), y * row);
+    return flipped;
   }
 }
