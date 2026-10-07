@@ -8,7 +8,7 @@
 // turns it into { age, origin } for the frame and the renderer draws it (ShotRenderer.setParticles, off by default).
 import * as THREE from 'three/webgpu';
 import { Fn, uniform, vec2, vec3, vec4, float, uint, uv, exp, sin, cos, pow, clamp, mix, min, max, floor, select, dot,
-  instanceIndex, hash, varying, mrt, positionWorld, cameraPosition, smoothstep } from 'three/tsl';
+  instanceIndex, hash, varying, mrt, positionWorld, cameraPosition, smoothstep, texture, screenCoordinate } from 'three/tsl';
 
 const TAU = Math.PI * 2;
 const hexRGB = h => [1, 3, 5].map(i => parseInt(h.slice(i, i + 2), 16) / 255);
@@ -33,7 +33,7 @@ export const particleCount = ev => { const p = spellParams(ev), d = p.density; r
  * Each layer is one THREE.Sprite drawn `count` times (SpriteNodeMaterial billboards it; positionNode/scaleNode are
  * per instance). Dead or unborn particles get scale 0: their quads collapse and draw no fragments.
  */
-export function makeSpell(ev) {
+export function makeSpell(ev, { distTex, invSize, soft = 0.01 }) {
   const P = spellParams(ev), C = P.colors, D = P.density, S = P.scale;
   const U = { age: uniform(0), origin: uniform(new THREE.Vector3()), intensity: uniform(P.intensity),
     hot: uniform(new THREE.Vector3(...hexRGB(C.hot))), a: uniform(new THREE.Vector3(...hexRGB(C.a))), b: uniform(new THREE.Vector3(...hexRGB(C.b))), ember: uniform(new THREE.Vector3(...hexRGB(C.ember))) };
@@ -44,18 +44,22 @@ export function makeSpell(ev) {
   // the sprite's look: a hot centre and a soft halo, additive; distance written only where it is solid (see below)
   const layer = (name, count, build, { halo = 0.25, core = 12, writeDist = false } = {}) => {
     if (count <= 0) return;
-    const m = new THREE.SpriteNodeMaterial({ transparent: true, depthWrite: false, depthTest: true, sizeAttenuation: true,
+    // no depth buffer: the particle buffer is single-sampled (see ShotRenderer.fxFor), so the scene's depth is tested
+    // here against its resolved distance pass, softly (soft particles: a fade over `soft` metres where a sprite meets a surface)
+    const m = new THREE.SpriteNodeMaterial({ transparent: true, depthWrite: false, depthTest: false, sizeAttenuation: true,
       blending: THREE.CustomBlending, blendSrc: THREE.OneFactor, blendDst: THREE.OneFactor, blendEquation: THREE.AddEquation,
       blendSrcAlpha: THREE.OneFactor, blendDstAlpha: THREE.OneFactor });
     const o = build();   // { pos: vec3 world, size: float metres (0 = dead), col: vec3 (premultiplied by alpha) }
     m.positionNode = o.pos; m.scaleNode = vec2(o.size, o.size);
     const col = varying(o.col, `v_${name}_col`);
     const q = uv().mul(2).sub(1), d = dot(q, q), g = exp(d.mul(-core)).add(exp(d.mul(-3)).mul(halo)).mul(float(1).sub(d).max(0));
-    m.outputNode = vec4(col.mul(g).mul(U.intensity), 1);
+    const zs = texture(distTex, screenCoordinate.xy.mul(invSize)).level(0), sceneD = select(zs.r.lessThanEqual(0), float(1e3), zs.r.div(max(zs.g, 1)));
+    const pd = positionWorld.distance(cameraPosition), vis = clamp(sceneD.sub(pd).div(soft), 0, 1);
+    m.outputNode = vec4(col.mul(g).mul(U.intensity).mul(vis), 1);
     // distance pass (min-blended, see ShotRenderer.fxMRT): the solid centre of a spark is a surface for the depth of
     // field and the haze; its halo and the soft core sprites are not (they write the far value, a no-op under min)
     const far = float(1e4);
-    m.mrtNode = mrt({ dist: writeDist && P.distWrite ? vec4(select(d.lessThan(0.15), positionWorld.distance(cameraPosition), far), far, 0, 1) : vec4(far, far, 0, 1) });
+    m.mrtNode = mrt({ dist: writeDist && P.distWrite ? vec4(select(d.lessThan(0.15).and(vis.greaterThan(0.5)), pd, far), far, 0, 1) : vec4(far, far, 0, 1) });
     const s = new THREE.Sprite(m); s.count = count; s.frustumCulled = false; s.name = `particles:${name}`; s.matrixAutoUpdate = false;
     group.add(s);
   };

@@ -1,7 +1,7 @@
 // Builds a three.js scene from the scene document and renders evaluated frames with the Black Page look.
 // WebGPURenderer (falls back to WebGL2 by itself) with TSL materials; no colour management, like the engine.
 import * as THREE from 'three/webgpu';
-import { mrt, output, vec2, vec4, positionWorld, cameraPosition, uniform, uv, Fn } from 'three/tsl';
+import { mrt, output, vec2, vec4, positionWorld, cameraPosition, uniform, uv, Fn, texture, select } from 'three/tsl';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { bodyMaterial, crtMaterial, glowMaterial, makeLightUniforms } from './materials.js';
 import { makePost, makeOutline } from './post.js';
@@ -73,7 +73,22 @@ export class ShotRenderer {
     // so a spark's solid centre becomes the nearest surface for depth of field and haze and the rest leaves it alone
     const minBlend = Object.assign(new THREE.BlendMode(THREE.CustomBlending), { blendSrc: THREE.OneFactor, blendDst: THREE.OneFactor,
       blendEquation: THREE.MinEquation, blendSrcAlpha: THREE.OneFactor, blendDstAlpha: THREE.OneFactor, blendEquationAlpha: THREE.MinEquation });
-    this.fxMRT = mrt({ output, dist: vec4(1e4, 1e4, 0, 1) }).setBlendMode('dist', minBlend);
+    this.fxMRT = mrt({ output, dist: vec4(1e4, 1e4, 0, 1) }).setBlendMode('dist', minBlend).setClearColor('dist', new THREE.Color(1e4, 1e4, 0), 1);
+    // Particles draw into their own single-sampled buffer (colour adds in half float, distance takes the minimum), then
+    // one full-screen quad adds them into the multisampled scene buffer. Additive blending of overlapping sprites
+    // straight into the 4x MSAA buffer was not repeatable: the same frame differed by 1/255 in ~600 values run to run
+    // (MAX blending too, NoBlending not; without MSAA it was exact), so the many-sprite draw stays out of MSAA.
+    this.fxRT = new THREE.RenderTarget(this.W, this.H, { count: 2, samples: 0, depthBuffer: false, type: THREE.HalfFloatType,
+      minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter, generateMipmaps: false });
+    this.fxRT.textures[0].name = 'output'; Object.assign(this.fxRT.textures[1], { name: 'dist', format: THREE.RGFormat });
+    this.fxInv = uniform(new THREE.Vector2(1 / this.W, 1 / this.H));
+    const fxCol = texture(this.fxRT.textures[0]), fxDist = texture(this.fxRT.textures[1]);
+    const mm = new THREE.NodeMaterial(); Object.assign(mm, { depthTest: false, depthWrite: false, transparent: true, blending: THREE.CustomBlending,
+      blendSrc: THREE.OneFactor, blendDst: THREE.OneFactor, blendEquation: THREE.AddEquation, blendSrcAlpha: THREE.ZeroFactor, blendDstAlpha: THREE.OneFactor });
+    mm.outputNode = vec4(fxCol.sample(uv()).rgb, 0);
+    const fd = fxDist.sample(uv()).r;   // g = 1 only where a spark wrote a distance, so the pixel look's screen flag (g = 2) survives elsewhere
+    mm.mrtNode = mrt({ dist: vec4(fd, select(fd.lessThan(1e3), 1, 1e4), 0, 1) });
+    this.fxMerge = new THREE.QuadMesh(mm);
   }
 
   /** The emitters for this frame's particle events (built once per event and parameter set), updated to the frame. */
@@ -82,7 +97,7 @@ export class ShotRenderer {
     for (const p of list) {
       const { t: _t, ...rest } = p.ev, key = JSON.stringify(rest); seen.add(key);
       let e = this.fx.get(key);
-      if (!e) { e = makeSpell(p.ev); this.fx.set(key, e); this.fxScene.add(e.group); }
+      if (!e) { e = makeSpell(p.ev, { distTex: this.sceneRT.textures[1], invSize: this.fxInv }); this.fx.set(key, e); this.fxScene.add(e.group); }
       e.update(p); e.group.visible = true;
     }
     for (const [key, e] of this.fx) if (!seen.has(key)) e.group.visible = false;
@@ -374,8 +389,13 @@ export class ShotRenderer {
     if (this.sceneRT.width !== sw || this.sceneRT.height !== sh) this.sceneRT.setSize(sw, sh);
     this.mark('scene'); r.setMRT(this.sceneMRT); r.setRenderTarget(this.sceneRT); r.clear(); r.render(this.scene, cam); r.setMRT(null);
     if (this.particlesOn && st.particles?.length && this.fxFor(st.particles)) {
+      if (this.fxRT.width !== sw || this.fxRT.height !== sh) this.fxRT.setSize(sw, sh);
+      this.fxInv.value.set(1 / sw, 1 / sh);
+      const cc = r.getClearColor(new THREE.Color()), ca = r.getClearAlpha();
+      this.mark('particles'); r.setMRT(this.fxMRT); r.setRenderTarget(this.fxRT); r.setClearColor(0x000000, 0); r.render(this.fxScene, cam);   // autoClear: the MRT clear colours apply (r.clear() would not)
+      // the dist attachment clears to the far value (MRT clear colour) so the min blend leaves the scene's distance alone
       const ac = r.autoClear; r.autoClear = false;
-      this.mark('particles'); r.setMRT(this.fxMRT); r.setRenderTarget(this.sceneRT); r.render(this.fxScene, cam); r.setMRT(null); r.autoClear = ac;
+      this.mark('particles merge'); r.setRenderTarget(this.sceneRT); this.fxMerge.render(r); r.setMRT(null); r.autoClear = ac; r.setClearColor(cc, ca);
     }
     // lens + circle of confusion
     const P = post.U, F = st.focus, D = !!(show.dof && F && (F.px > 0 || F.edge > 0 || F.spot > 0));
