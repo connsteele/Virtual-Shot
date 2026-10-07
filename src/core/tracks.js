@@ -45,3 +45,18 @@ export function trackSegment(track, t) {
     return { a, b, u: (CURVES[b.curve || 'smooth'] || easeInOut)(clamp((t - a.t) / Math.max(1e-4, b.t - a.t), 0, 1)) };
   }
 }
+
+/** Value of a typed track at time t. type: 'number' (default), 'bool' (steps: each key holds until the next) or
+ *  'color' ('#rrggbb', blended in display RGB along the key's curve). Records (focus) use trackSegment instead. */
+export function typedValue(track, t) {
+  const K = track.keys, type = track.type || 'number';
+  if (type === 'number') return trackValue(track, t);
+  if (!K || !K.length) return track.default;
+  if (t <= K[0].t) return K[0].v;
+  let i = 0; while (i + 1 < K.length && K[i + 1].t <= t) i++;
+  if (type === 'bool' || i === K.length - 1) return K[i].v;
+  const a = K[i], b = K[i + 1], u = segVal({ t: a.t, v: 0 }, { t: b.t, v: 1, curve: b.curve === 'bezier' ? 'smooth' : b.curve }, t, false);
+  const ca = hexRGB(a.v), cb = hexRGB(b.v);
+  return '#' + ca.map((x, c) => Math.round(clamp(lerp(x, cb[c], u), 0, 255)).toString(16).padStart(2, '0')).join('');
+}
+const hexRGB = h => [1, 3, 5].map(i => parseInt(String(h).slice(i, i + 2), 16) || 0);

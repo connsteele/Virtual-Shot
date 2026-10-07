@@ -4,13 +4,14 @@
 import { clamp, lerp, easeInOut, hash, hex } from './curves.js';
 import { trackValue, trackSegment } from './tracks.js';
 import { add, sub, scl, dot, cross, nrm, xf, M4, trsOf, frameOf } from './vec.js';
+import { indexAnim, evaluateObjects } from './animate.js';
 
 /** Index a document once: objects by id, tracks by "target.prop". */
 export function indexDoc(doc) {
   const obj = Object.fromEntries(doc.objects.map(o => [o.id, o]));
   const tracks = Object.fromEntries(doc.tracks.map(tr => [`${tr.target}.${tr.prop}`, tr]));
   const glass = obj.glass ? { ...frameOf(obj.glass.transform), W: obj.glass.size[0], H: obj.glass.size[1] } : null;
-  return { obj, tracks, glass };
+  return { obj, tracks, glass, anim: indexAnim(doc, tracks) };
 }
 
 const RIG = ['dist', 'fov', 'x', 'y', 'distort', 'yaw', 'pitch', 'squint'];
@@ -67,6 +68,12 @@ function ringAt(doc, wiiObj, geo, t, eye, fps) {
     rad: Rg.radius || 0.07, glow: Rg.glow ?? 1, rum, pos: add(ctr, scl(m.up, 0.006)), leds: leds.map(p => add(p, scl(nrm(sub(eye, p)), 0.004))) };
 }
 
+/** The remote with its keyed ring properties (intensity, light, colour) at t. */
+function ringObj(o, objects) {
+  const P = o && objects[o.id]?.props; if (!P || !o.ring) return o;
+  return { ...o, ring: { ...o.ring, intensity: P['ring.intensity'] ?? o.ring.intensity, light: P['ring.light'] ?? o.ring.light, color: P['ring.color'] ?? o.ring.color } };
+}
+
 /** Haze strength for frame f, as Black Page's compositor keyed it (final/comp_build.py): fade in with the reveal, then
  *  scale each frame's haze toward a target brightness (measured levels averaged over +-smooth frames), capped. The
  *  levels are an analysis of the rendered haze, baked into the document (look.haze.levels). */
@@ -87,8 +94,20 @@ function ghostLevel(g, t, i) {
   if (fl < (g.dropout ?? 0.18)) e *= 0.15; else e *= 0.75 + 0.25 * fl; return e * (g.intensity || 0.3);
 }
 
+/** Geometry at t: animated objects carry their focus centres and the remote's LED frame with them. Static objects
+ *  keep the values measured at load, so shots without object animation evaluate exactly as before. */
+function geoAt(geo, objects) {
+  const ids = Object.keys(objects); if (!ids.length || !geo) return geo;
+  const g = { ...geo, centres: { ...geo.centres } };
+  for (const id of ids) { const M = objects[id].matrix;
+    if (geo.local?.[id]) g.centres[id] = xf(M, geo.local[id]);
+    if (geo.wii && geo.wiiId === id) g.wii = { ...geo.wii, M, ctr: g.centres[id] ?? xf(M, [0, 0, 0]), up: nrm([M[4], M[5], M[6]]) }; }
+  return g;
+}
+
 export function evaluate(doc, t, geo, ix = indexDoc(doc)) {
   const fps = doc.fps, frame = Math.round(t * fps), aspect = doc.output.width / doc.output.height;
+  const objects = evaluateObjects(doc, t, ix, geo); geo = geoAt(geo, objects);
   const val = (key, def) => { const tr = ix.tracks[key]; return tr ? trackValue(tr, t) : def; };
   const cam = ix.obj.cam;
   const rig = Object.fromEntries(RIG.map(n => [n, val(`cam.rig.${n}`, ix.tracks[`cam.rig.${n}`]?.default ?? 0)]));
@@ -98,7 +117,7 @@ export function evaluate(doc, t, geo, ix = indexDoc(doc)) {
   const vp = M4.mul(M4.persp(pose.fovRender * Math.PI / 180, aspect, pose.near, pose.far), M4.look(pose.eye, pose.target, pose.up));
   const L = doc.look.lighting, gl = L.glow;
   const glowCol = gl.base.map((v, i) => v * (gl.chaosGain[0] + gl.chaosGain[1] * chaos) + gl.floor[i]);
-  const led = ix.obj.led, ledFlip = dot(led.normal, sub(pose.eye, led.position)) < 0;
+  const led0 = ix.obj.led, ledA = objects[led0.id]?.props, led = ledA ? { ...led0, intensity: ledA.intensity, color: ledA.color } : led0, ledFlip = dot(led.normal, sub(pose.eye, led.position)) < 0;
   const ghosts = []; (doc.events.ghosts || []).filter(g => g.on !== false).forEach((g, i) => { if (ghosts.length >= 4) return; const lv = ghostLevel(g, t, i); if (lv > 0) ghosts.push({ ...g, level: lv }); });
   return {
     t, frame, cut: t >= doc.cut, rig, chaos, revealK,
@@ -108,9 +127,10 @@ export function evaluate(doc, t, geo, ix = indexDoc(doc)) {
     lighting: { ambient: L.ambient || 0, screen: L.screen ?? 4.5, bounce: L.bounce || 0,
       bouncePos: add(add(ix.glass.ctr, scl(ix.glass.n, L.bounceDist ?? 0.75)), scl(ix.glass.u, 0.05)) },
     led: { pos: led.position, n: ledFlip ? scl(led.normal, -1) : led.normal, color: hex(led.color).map(v => v / 255), intensity: (led.intensity ?? 1) * Math.max(revealK, 0), size: led.size || 1 },
-    ring: ringAt(doc, ix.obj.wii, geo, t, pose.eye, fps),
+    ring: ringAt(doc, ringObj(ix.obj.wii, objects), geo, t, pose.eye, fps),
     focus: focusAt(ix, geo, ix.tracks['cam.focus'], t, pose.eye, vp, pose.k, aspect),
     ghosts,
     haze: doc.look.haze ? { gain: hazeGain(doc.look.haze, frame) } : null,
+    objects,
   };
 }
