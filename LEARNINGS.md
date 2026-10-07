@@ -606,6 +606,147 @@ load (three's `compileAsync` covers scene materials but not full-screen passes).
 - The default look is unchanged by all of this: frames 120/300/720/1100 are bit-identical to before the pixel look
   (PSNR infinite).
 
+## Spike: Anime cel look (branch `spike-cel-look`)
+
+**What was built.** A self-contained look module, `src/render/looks/cel.js` (about 275 lines), and a lookdev page,
+`src/lookdev/` (about 135 lines). The renderer needs about 15 lines of hooks:
+- `ShotRenderer.setCelLook(look | null)`;
+- a G-buffer prepass before the scene pass;
+- the line pass writes into `outlineRT`, which the lens already reads for the pixel outlines.
+
+`bodyMaterial` also keeps its options in `material.userData.opts`, so a look can rebuild the surface.
+
+- **Toon material** (`celBodyMaterial`). It uses the shot's own lights: the CRT spill with its forward lobe, the room
+  bounce, the power LED, the ringing remote and ambient. Each light's N.L goes through a **ramp** of 2 or 3 tones. The
+  ramp has shadow, mid and lit colours (cool purple shadows by default), thresholds `t1`/`t2` and an edge softness.
+  Distance falloff stays smooth. Emissive, the LED texel and the LED override work as in the engine.
+- **Rim light**, screen-space depth-offset style. The material steps `rimPx` pixels outward along its screen-space
+  normal in the G-buffer. Where that step lands on something clearly farther, the pixel is on a rim.
+  - A first version used fresnel (1 - N.V). It lit the whole floor and desk top, which are seen at grazing angles.
+  - The depth version lights only real outlines, at a constant width in pixels.
+  - This is why the G-buffer renders **before** the scene pass.
+- **Face shadow** (`faceTerm`, `makeFaceUniforms`). For a head, a designed terminator replaces the key light's N.L.
+  - The light direction is flattened onto the head's horizontal plane. Its angle from the face's forward axis
+    (0 front, 1 behind) is compared with a threshold in face space: u runs across the face toward the light (mirrored),
+    v runs up.
+  - The threshold can come from a texture: a Genshin-style SDF face-shadow map. Without one, a procedural map is used:
+    a vertical terminator with a nose bump.
+  - Lookdev sweep (`compare/face_shadow_sweep.jpg`): as the key goes 0° to 120°, the shadow slides cleanly across the
+    face, and the cheek under the nose stays lit at 90°.
+  - A character's head bone can drive `ctr`, `fwd`, `right` and `up` once characters exist.
+- **Line art.**
+  - **G-buffer** (`CelGBuffer`): a second scene of proxies. They share the placed meshes' geometry and copy their world
+    matrices and visibility each frame, so the shot's materials never swap per frame. It writes an RGBA16F target: view
+    normal (octahedral), view distance, and an id (object × 64 + material; one material per distinct texture).
+  - **Line pass** (`makeCelLines`): taps 8 directions × 3 radii, out to half the line width. Both sides of an edge
+    draw, so the line comes out at the full width. The nearest ring that finds an edge gives the distance to it, and
+    that distance gives a coverage, which acts as rough anti-aliasing.
+  - **Line kinds**, each with its own strength:
+    - silhouettes: a jump in distance (relative, looser on grazing surfaces) or a change of object id;
+    - creases: normals more than 50° apart;
+    - material boundaries: a change of id within one object.
+  - **Width** is set in output pixels.
+  - **Colour**: set directly, plus a tint toward a dark shade of the surface under the line.
+  - **Fade**: creases and material lines fade with distance (8–30 m); silhouettes don't.
+  - **Debug views**: lines only, normals, ids.
+
+**How to turn it on.**
+- **Editor:** Show menu › Style › **Anime cel** (off by default). Options:
+  - Tones: 3 or 2
+  - Tone edges: hard, soft, very soft
+  - Lines: off, 1, 2, 3 or 5 px
+  - Rim light: off, soft, strong
+  - Cel debug
+
+  Renders to disk follow the toggle, as Chunky pixels does.
+- **URL:** `?cel` on the editor or the viewer; `?cel=0` forces it off.
+- **Lookdev page:** `/src/lookdev/index.html`, with `?cel=0`, `?lines=0`, `?view=wide|close|face` and `?key=<deg>`. In the
+  page: `LD.render({...})`, `LD.save()`, `LD.time()`.
+- **With Chunky pixels:** if the pixel outlines are on too, the cel lines replace them.
+
+**Findings.**
+- **The default look is unchanged.** With the toggle off, frames 300/420/720/1000 are bit-identical to `spike` before
+  the change (ImageMagick AE 0 pixels). Turning cel on and back off at f720 also gives 0 differing pixels: the materials
+  swap back.
+- **GPU cost** (headless Chrome, RTX 4090, retaken behind the lock with the GPU otherwise idle at 11%):
+
+  | Pass | Without cel | With cel |
+  |---|---|---|
+  | Play quality frame, f420 | 5.31 ms | 5.56 ms |
+  | Play quality frame, f720 | 5.21 ms | 5.54 ms |
+  | Scene pass (toon materials) | 0.06–0.09 ms | 0.09–0.14 ms |
+  | G-buffer | — | 0.03–0.05 ms |
+  | Lines (2× lens-overscan scene buffer) | — | 0.20 ms |
+  | Render quality frame, f420 / f720 | 144.8 / 114.1 ms | 144.6 / 114.7 ms |
+
+  The look adds about **0.3 ms in all**, about 5% of a Play frame. Render quality is unchanged within noise; the haze
+  march is about 95% of that frame.
+
+  On the lookdev page (1080p, no overscan) the lines take 0.09 ms and the G-buffer 0.02 ms.
+
+  A first timing (10:11 UTC) overlapped another agent's unlocked heavy render (GPU at 75% when the lock was taken).
+  Its numbers matched the retake within 0.05 ms.
+- **On the Black Page shot the look barely reads.**
+  - The shot is lit by the CRT alone and everything sits in the dark tones; dark lines on dark plastic don't show.
+  - Depth of field and haze blur and veil the lines, because the lines are drawn before the lens, like the rest of the
+    engine picture. `debug/f720_lines_only.png` shows lines crisp on the remote and mush everywhere else.
+  - What does change: flatter, brighter plastic with a clear terminator, purple-tinted shadows, and a rim on the
+    monitor bezel and keyboard.
+  - For a dark shot to read as anime it would need lines drawn after depth of field (or a line-aware DOF), lighter or
+    coloured lines, and probably a brighter shadow tone. Those are art-direction calls for Connor.
+- **On well-lit props (lookdev) it reads clearly:** silhouettes, creases on the monitor bezel and keyboard, lines at
+  the drawer handle and at material boundaries, and a clean rim on the monitor. The PSX textures carry baked shading and
+  grain, which fight the flat tones; real cel would want flatter albedo (a high mip of the texture, or a palette).
+- **Crease angle:** 50° suits these low-poly props, so 8-sided cylinders don't get a line on every facet.
+- **Line width:** 1 px lines are faint (coverage over a 2-px minimum footprint); 2 px is the default, and 3 px reads as
+  anime at 1080p.
+
+**three.js / TSL gotchas.**
+- A fresnel rim in a toon material lights floors and desk tops seen at grazing angles. Use a screen-space depth-offset
+  rim instead (`screenUV`, with the G-buffer drawn before the scene).
+- RGBA32F isn't filterable without `float32-filterable`, so the G-buffer is RGBA16F, sampled with `.level(0)` and
+  nearest filtering. Ids stay exact up to 2048, and distance precision (about 0.05%) is enough for a 2% edge threshold.
+- The G-buffer clears to (0,0,0,1), so the background has to be detected by distance ≤ 0, not by id.
+- A proxy scene avoids swapping materials per frame on the real meshes, which would churn three's render-object cache.
+  The proxies share geometry, set `matrixWorldAutoUpdate = false`, and copy the meshes' matrices each frame.
+- WGSL `smoothstep` with equal edges is undefined, so tone softness is clamped to at least 0.002.
+- The materials.js rule still holds: shading helpers are plain JS builders called inside each material's own `Fn`, not
+  shared `Fn`s.
+
+**Frames.** In `G:\Claude\Virtual Legacy\Channel\Virtual Shot spike\cel_look\`:
+- Comparisons in `compare\`:
+  - `shot_default_vs_cel.jpg`: f300/420/720/1000, default | cel
+  - `shot_2x2_f420.jpg`: default, cel 2 px, cel 3 px, and the f720 lines-only debug view
+  - `lookdev_base_vs_cel.jpg`
+  - `lookdev_options_2x2.jpg`: 3 px lines, 2-tone hard, very soft, lines only
+  - `face_shadow_sweep.jpg`
+  - `freeview_base_vs_cel.jpg`
+- Full-size stills: `shot_default\`, `shot_cel\`, `shot_cel_3px\`, `lookdev\`, `debug\`, `freeview\`, and
+  `baseline_spike\` (the `spike` frames used for the bit-identity check).
+
+**What's next.**
+- Lines after depth of field, or a depth of field that keeps the lines sharp.
+- Flat-albedo options for textured props.
+- A ramp texture instead of the three tone colours.
+- Per-object line and tone overrides in the scene document (characters versus props).
+- Face uniforms driven by a rigged head bone.
+- Anime specular highlights.
+- Hatching in the shadow tone.
+
+**As a named look preset.** Everything the look needs is in `CEL_LOOK`.
+- **In the scene:** `look.style: "cel"`, with an optional `look.cel: {...}` override: tones, thresholds, colours, rim,
+  line width and colour, crease angle, fades.
+- **At load:** the renderer would call `setCelLook({ ...CEL_LOOK, ...doc.look.cel })`, so renders follow the document
+  rather than a viewport toggle. The Show-menu toggle then becomes a viewport preview of the style.
+- **The module's contract with the renderer:**
+  - `shot.placed`: the roots to shade
+  - `material.userData.opts`: how to rebuild each surface
+  - `shot.U`: the lights
+  - `sceneRT.textures[0]`: colour in
+  - an output target that the lens reads
+  - `mark()`: GPU timing
+- **Other looks** (watercolour, ink) could plug into the same points.
+
 ## Running the spike
 
 ```
@@ -632,6 +773,7 @@ tools at it. In the page: `await VS.exportFrames([...frames], '<run>')` writes P
 | `scenes/black_page.scene.json` | The scene document |
 | `src/core/` | Time core: tracks and curves, `evaluate(doc, t, geo)` |
 | `src/layers/chat2d.js` | The chat as a 2D layer |
+| `src/render/looks/cel.js`, `src/lookdev/` | Anime cel look (toon material, line art) and its lookdev page |
 | `src/render/` | three.js renderer: TSL materials, lens and DOF passes, haze (`haze.js`, `cycles_noise.js`), final composite |
 | `src/layers/pops2d.js` | The pops as a 2D layer |
 | `src/app.js`, `src/index.html` | Viewer: scrub, play, export hooks |
