@@ -698,6 +698,123 @@ halve the density and snap sprite sizes to whole internal pixels in the pixel lo
 colour over life into 3 bands and drop the halo. Play quality could use a lower `density` safely: with the closed form,
 a subset of indices is a valid subset of the effect.
 
+### Research pass (7 Oct, overnight)
+
+**What was added (all off by default; f300/f720 with particles off: 0 differing pixels vs `spike`; f700 with particles on
+and the light off: 0 differing pixels vs the build's own f700).**
+- **FX look dev page** `src/lookdev/fx.html` (`fx.js`): the spell on a lit table of PSX props (read from `/psx/`), through
+  the same scene MRT and the *same particle pass* as the shot (`ShotRenderer.prototype.setParticles/fxFor` run on the
+  page's buffers). Rigs `day` (lit for editing), `dusk`, `night`; views 0 wide / 1 burst / 2 inside the burst;
+  `?age= &light= &lighting= &smoke= &w= &h= &gputime`. In the page: `VS.save`, `VS.bench`, `VS.setEvent({...})`,
+  `VS.simGpu`, `VS.sortGpu`, `VS.simDeterminism`.
+- **Particle light** (Show > Effects > Particle light: Off / On / Strong; `?plight=1`): `spellLight(ev, age)` in
+  particles.js is the core's closed-form envelope (flash, sustain, out) plus the sparks' early burst, so it stays a pure
+  function of age; `bodyMaterial` got one more point light (`U.xp/xc/xi/xrad`, inverse square past 12 cm, xi = 0 when
+  off). The shot uses the first live particle event.
+- Look-dev-only prototypes: an **alpha smoke** layer in three orders (unsorted, GPU-sorted, weighted blended OIT) and a
+  **stateful compute tier** (fixed-step sim with a table-top bounce, re-simulated from t0 every frame).
+
+**Headline findings**
+1. **The closed-form tier is cheap in counts and expensive only in fill.** Clean timings under the lock (1080p): 116k
+   particles 0.086 ms, 464k 0.30, 1.86M 1.38 (vertex-bound, ~0.75 ms per million; the same as the build's numbers, so
+   those weren't distorted by the overlap). Overdraw costs **~0.020 ms per full-screen layer of sprite coverage at 1080p,
+   ~0.083 at 4K**: big soft core sprites at ~93 screens of coverage 2.8 ms, ~580 screens 11.7 ms, ~2300 screens 47 ms.
+   Budget overdraw, not counts. 16k alpha smoke puffs: 4.3 ms seen from 0.7 m, 18.8 ms with the camera inside the cloud.
+2. **Resolution:** the default effect barely moves (0.074 / 0.086 / 0.091 / 0.105 ms at 540p / 1080p / 1440p / 2160p);
+   fill-bound cases scale with pixels (core 1024 x 0.5 m: 3.1 / 11.7 / 20.9 / 48.3 ms; smoke from inside: 4.7 / 18.8 /
+   33.4 / 75 ms). The merge quad is 0.008-0.075 ms. A half-resolution particle buffer for fill-heavy effects in Play is
+   the lever (standard; it needs a depth-aware upsample at edges, the soft depth test already reads the distance pass).
+3. **The effect lighting the scene is free and is the biggest visual win** (scene pass 0.084 -> 0.093 ms, noise; shot
+   Play total 5.15 -> 5.35 ms with particles + light). In the shot it grounds the burst: the remote and the desk under it
+   go cyan-white on the flash (`sheet_shot_light.jpg`, `spell_light1_f640-760_60p.mp4`); in the lit look dev it's subtle
+   at gain 1 and reads at 3 (`sheet_light_night.jpg`). Side effect: the cyan light washes out the remote's red ring glow
+   while both are on (Connor's call). No shadows from it; the haze isn't lit by it yet.
+4. **Sorting alpha particles is cheap on the GPU; WBOIT is a fair stand-in.** Bitonic sort (three's `BitonicSort`) of a
+   packed 32-bit key (16-bit quantised distance, 16-bit index): 16k keys 0.23 ms (36 dispatches), 64k keys 0.36 ms (55);
+   the key kernel ~0.004 ms. Against the sorted result: unsorted (instance order) 22-30 dB, weighted blended OIT
+   (McGuire & Bavoil) 25-33 dB, at the same draw cost (+0.017 ms composite). WBOIT loses the dark-over-bright layering
+   (it averages); unsorted shows soot specks on top (`sheet_smoke_order.jpg`). The sort is deterministic (fixed keys,
+   index tie-break).
+5. **A stateful compute tier can re-simulate from t0 every frame, bit-exact.** Fixed 240 Hz steps with gravity, drag and
+   a bounce: **~0.79 ns per particle-step** (1M particles: 60 steps 0.054 ms, 240 steps 0.20, 960 steps 0.76, 2400 steps =
+   10 s of sim 1.9 ms). Re-simulating twice, and re-simulating vs stepping incrementally 240 times from the initial
+   state: **0 differing values of 4.19M**. So "pure function of t" survives a stateful sim with no cache up to ~10M
+   particle-seconds per frame; beyond that, checkpoints (state every N frames; 1M particles x 32 B = 32 MB each), stepping
+   forward from the nearest one (`sheet_sim_bounce.jpg`).
+
+**Where it breaks (look dev, `sheet_variations.jpg`)**
+- **8-bit clipping.** The scene buffer is RGBA8, so additive glow saturates to white: density 16 is a white blob, core
+  sprites at 0.2-0.5 m wash everything out, and colour over life is lost exactly where stylised bursts want it. Fix: a
+  half-float scene buffer (or keep the effect in the half-float fx buffer) with a bloom / tone curve on the merge, and
+  intensity normalised by density so density is a quality knob, not a brightness knob.
+- **The soft-particle fade is a fixed 1 cm.** Fine for 2 mm sparks; big sprites cut hard against the table and trace the
+  monitor's silhouette as a dashed line. Make `soft` proportional to sprite size (~0.3 x size).
+- **In a lit room the burst reads small and "dusty"**: thousands of dots, no shape language (next paragraph).
+
+**Reference comparison: stylised spell VFX (Genshin / anime / FF bursts; Niagara and VFX Graph conventions)**
+- *Matches:* front-loaded burst timing (impact, then dissipation with lingering embers), hot core to hue colour over life,
+  shockwave rings, spiral arms, additive glow, soft particles against surfaces.
+- *Doesn't:* stylised game bursts are mostly **meshes and textures, not dots**: scrolling-UV and flipbook textures on
+  ring / cylinder / sphere meshes, ribbons and trails, ground sigil decals, UV distortion and heat haze, HDR bloom, a
+  screen flash, camera shake, and a few big hand-shaped elements with strong silhouettes; anime timing often steps on
+  2s / 3s. Ours has none of the meshes, trails, distortion or bloom.
+- *Cheap in the closed form:* stepped (anime) timing = quantise age; **ribbons / trails** = evaluate the same closed-form
+  position at age - k dt for k = 0..n (no history needed); velocity-stretched sprites (the derivative); flipbooks (frame
+  from age); mesh elements (a ring mesh whose radius and UV scroll are functions of age); an emitter on a moving object
+  sampled at each particle's *birth* time (if the anchor's track is uploaded as a texture of positions).
+- *Needs the stateful tier:* collisions with the scene (Niagara: scene depth, distance fields, CPU traces),
+  inter-particle effects (Niagara's Neighbor Grid 3D: flocking, fluids, repulsion), spawn on events (on death, on
+  collision), forces from moving fields or targets, particles continuously following an animated or skinned emitter,
+  ribbons attached to simulated heads.
+
+**What the second (stateful) tier needs, concretely**
+- A fixed timestep (240 Hz, or the shot rate x N), initial state hashed from (seed, index) as now, state(t) = the steps
+  applied from t0. Re-simulate from t0 every evaluated frame (cheap, measured above); add checkpoints only when particles
+  x steps passes ~10M per frame. Render caches keyed by (event JSON, frame).
+- **Colliders from the scene document, in world space** (analytic planes / boxes / spheres, or a baked SDF per static
+  mesh), never the camera's depth buffer: depth collisions change with framing and break determinism across cameras.
+  (The prototype collides with the table-top plane only, so sparks slide past the table's edge.)
+- Emitters on animated objects: evaluate the anchor's transform at every sim step (an array of per-step transforms
+  uploaded with the re-sim), so the sim depends only on the document.
+- Deterministic neighbour queries: build the grid with a counting sort (three ships `CountingSort.js`) ordered by cell
+  then index, never atomics-in-arrival-order with float accumulation.
+- Same caveat as the build: bit-exactness is per GPU and driver (fma contraction); final renders on one machine.
+
+**Recommendations for the real build**
+- Keep the closed-form tier as the default; add kinds for ribbons, mesh rings / sigils, flipbooks and stretched sparks
+  before reaching for compute.
+- Give every effect kind a light (`spellLight`-style closed form); it's free. Light the haze from it too (one extra point
+  in the haze light grid).
+- Half-float scene buffer + bloom for effects, density-normalised intensity, size-scaled soft fade.
+- Alpha effects: WBOIT by default (no sort, same cost), bitonic-sorted per layer (<= 64k with 16-bit keys; a key/value
+  radix sort beyond) as the Render-quality option.
+- Budget overdraw per effect (screens of coverage); Play could draw fill-heavy effects at half resolution.
+- The compute tier as above when an effect needs collisions or neighbours.
+- Open questions for Connor: should a spell light the room by default (it changes the remote's red glow)? Stepped anime
+  timing for spells (an event setting)?
+
+**Costs (GPU ms, headless Chrome, RTX 4090, under the GPU lock).** Shot f664-688, median: Play total 5.15 (off) / 5.30
+(particles) / 5.35 (particles + light); Render 114.7 / 115.7 / 114.7 (the haze march dominates). Particle pass 0.085,
+merge 0.037 at both qualities. GPU utilisation from other jobs: 21-30 % at the start of the 1080p look-dev bench (just
+above the ~15 % line, briefly; its numbers match the build's recheck), 6-14 % for everything else.
+
+**three.js / TSL gotchas (new)**
+- Capture the canvas in the same task as the render: awaiting `onSubmittedWorkDone()` between the render and `drawImage`
+  gives a blank (white) canvas. Await before the render instead.
+- Compute timestamps: three's query id is `c:<calls>:<node ids>:f<info.frame>`, so one `mark()` can cover many
+  dispatches (a bitonic sort is 36-55): sum every entry with that frame number. Wall time (submit to
+  `onSubmittedWorkDone`) floors at ~3 ms headless, useless for short compute.
+- `BitonicSort` sorts `uint` only: pack key and index into 32 bits (<= 65536 particles with a 16-bit index).
+- `instancedArray(...).element(instanceIndex)` reads fine in a `SpriteNodeMaterial`'s vertex stage (sorted order,
+  simulated positions); no `toAttribute()` needed.
+- WBOIT needs a per-attachment blend on the reveal target (`mrt.setBlendMode('reveal', ...)`: src Zero, dst
+  OneMinusSrcColor) and a clear colour of 1 (`setClearColor('reveal', ...)`); both work on WebGPU.
+
+**Frames and sheets:** `G:\Claude\Virtual Legacy\Channel\Virtual Shot spike\particles\research\`: `sheet_age_day.jpg`,
+`sheet_age_dusk_light.jpg`, `sheet_light_night.jpg`, `sheet_shot_light.jpg`, `sheet_smoke_order.jpg`,
+`sheet_sim_bounce.jpg`, `sheet_variations.jpg`, `spell_light1_f640-760_60p.mp4` (+ `seq_light1_f640-760\`),
+`lookdev\` (the stills), `timings\*.json`, `bitcheck_off\`, `bitcheck_on_nolight\`.
+
 ## Running the spike
 
 ```

@@ -96,9 +96,10 @@ async function boot() {
   const mark = n => { if (!timing) return; r.info.frame = ++seq; names.set(seq, n); };
   const gpuTimes = async () => { if (!timing) return []; await Promise.race([r.resolveTimestampsAsync('render'), new Promise(res => setTimeout(res, 3000))]);
     await Promise.race([r.resolveTimestampsAsync('compute'), new Promise(res => setTimeout(res, 3000))]);
-    const out = [];
+    const out = [], hit = new Map();   // one mark can cover several passes (a sort is ~36 dispatches): their times add up
     for (const type of ['render', 'compute']) { const pool = r.backend.timestampQueryPool?.[type]; if (!pool) continue;
-      for (const [uid, ms] of pool.timestamps) { const s = +(uid.match(/:f(\d+)$/) || [])[1], n = names.get(s); if (n === undefined) continue; names.delete(s); out.push({ name: n, ms }); } }
+      for (const [uid, ms] of pool.timestamps) { const s = +(uid.match(/:f(\d+)$/) || [])[1]; if (!names.has(s)) continue; hit.set(s, (hit.get(s) || 0) + ms); } }
+    for (const [s, ms] of hit) { out.push({ name: names.get(s), ms }); names.delete(s); }
     return out; };
 
   // ---- alpha smoke: a layer that needs an order (premultiplied "over", unlike the additive sparks) ------------------
@@ -261,6 +262,16 @@ async function boot() {
   };
   /** Compute-tier checks: wall ms (submit to done) of the re-simulation at `steps`, and determinism (two re-simulations,
    *  and re-simulation vs stepping one step per call from the initial state, compared bit for bit). */
+  const gpuMed = async (fn, reps = 5) => { fn(); await idle(); await gpuTimes(); const v = [];
+    for (let i = 0; i < reps; i++) { fn(); await idle(); const t = await gpuTimes(); v.push(t.reduce((a, b) => a + b.ms, 0)); }
+    v.sort((a, b) => a - b); return +v[v.length >> 1].toFixed(3); };
+  /** GPU timestamps of the compute tier: re-simulation at several step counts, and one incremental step. */
+  const simGpu = async (stepsList = [1, 60, 240, 480, 960]) => {
+    const out = {}; for (const steps of stepsList) { SIM.steps.value = steps; out[steps] = await gpuMed(() => { mark('sim'); r.compute(resim); }); }
+    return { n: SIM_N, dt: DT, resimMs: out, oneStepMs: await gpuMed(() => { mark('step'); r.compute(step1); }) };
+  };
+  const sortGpu = async () => { SU.cam.value.copy(camera.position); SU.age.value = state.age;
+    return { n: SMOKE_N, keysMs: await gpuMed(() => { mark('keys'); r.compute(keyKernel); }), sortMs: await gpuMed(() => { mark('sort'); sorter.compute(r); }), dispatches: sorter.stepCount }; };
   const simBench = async (stepsList = [60, 240, 480, 960], reps = 5) => {
     const out = {};
     for (const steps of stepsList) { SIM.steps.value = steps; r.compute(resim); await idle();
@@ -285,7 +296,7 @@ async function boot() {
   };
   const setEvent = over => { state.ev = { id: 'lookdev', kind: 'spellBurst', t: 0, dur: 2.4, seed: 1, ...over }; };
 
-  window.VS = { renderer: r, scene, camera, U, SU, SIM, state, render, save, bench, gpuTimes, setView, VIEWS, setLighting, setEvent, simBench, simDeterminism, sortBench,
+  window.VS = { renderer: r, scene, camera, U, SU, SIM, state, render, save, bench, gpuTimes, setView, VIEWS, setLighting, setEvent, simBench, simDeterminism, sortBench, simGpu, sortGpu,
     particleCount: () => particleCount(state.ev), origin, W, H, idle };
   $('age').value = state.age; $('light').checked = state.light > 0; $('lighting').value = state.lighting; $('smoke').value = state.smoke;
   $('age').oninput = e => { state.age = +e.target.value; render(); };
