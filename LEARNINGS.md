@@ -668,6 +668,68 @@ build should keep a set of buffers per style instead of resizing.
 - Next: a "Save as preset" button (defineLookStyle from the override), per-preset precompile, presets for the cel and
   Halo CE looks via `MATERIAL_SETS`, and a PS1 depth-cue fog and no-z-buffer sorting if Connor wants it more authentic.
 
+### Research pass (look presets)
+
+Sheet: `look_presets\research\presets_sheet.jpg` (rows: default, chunky-pixels, wii-bloom, wii-480i, ps1, ps1-authentic;
+columns: shot f420, f720, f1000, then the free view lit for editing, wide and close on the keyboard). Per-preset frames in
+`look_presets\research\<preset>\`, lit views in `research\lit\`.
+
+**Against the real hardware** (from hardware documentation and emulator behaviour, not frame-matched captures):
+- **Wii:** games render 640×480 (often 640×456/528) into a 24-bit frame buffer (RGB8 or RGBA6, the "18-bit" look with
+  dithering), and 16:9 games render *anamorphic*: the same 640 columns stretched to widescreen, so pixels are 1.33× wider
+  than tall. Output goes through the deflicker filter, a vertical 3-tap blur most games leave on, which softens the
+  frame noticeably on a CRT. Bloom was common in later titles. The old chunky preset's square 854×480 pixels and hard
+  rows were sharper than any real Wii game. **New preset `wii-480i`**: 640×480 anamorphic, 18-bit dither, deflicker
+  `[1 2 1]/4`, bloom 0.5. It looks softer and closer to a captured Wii frame; the screen text stays sharp (mixed resolution).
+- **PS1:** 320×240 (some 256×240, 512×240, 640×480 interlaced for menus), 15-bit with the GPU's 4×4 ordered dither, no
+  perspective correction, vertex positions in whole pixels (the GTE has no sub-pixel precision), Gouraud shading, no
+  mipmaps or bilinear filtering, no depth buffer (polygons sorted per primitive, so they pop and tear), and depth cueing:
+  colour faded toward the far colour by the GTE, per vertex. **New preset `ps1-authentic`**: 320×240 anamorphic, no sharp
+  screen text, depth-cue fog from 0.6 to 3 m, plus the existing snap / affine / Gouraud. In the shot, the fog darkens the
+  monitor in the wide frames (it sits about 2.5 m from the camera), which reads as PS1 but loses the screen. The
+  chat is unreadable at 240 lines without the mixed-resolution text, as the build round predicted.
+- **Not done, and what it would take:** primitive sorting with no depth buffer (render each mesh's triangles sorted by
+  their centroid depth with depth testing off: a material option and a CPU sort per frame); texture colour depth (4/8-bit
+  palettes: quantise each texture once at load); polygon seams (T-junction cracks show only on real PS1 meshes); the Wii's
+  1.33× pixel aspect also affects depth-of-field radii (circles become ellipses in the anamorphic buffer; scale the gather's
+  x by the pixel aspect).
+
+**Variations and limits:**
+- The anamorphic buffer needed one renderer change: the camera's aspect is now the output's when the buffer has its own
+  width (`ShotRenderer.aspect`). The square 854×480 buffer is 0.08% wider than 16:9 and was rendered at its own aspect;
+  that is kept so the existing chunky presets render exactly as before (checked: 0 differing pixels at f720 for
+  chunky-pixels and ps1).
+- PS1 artefacts scale with polygon size on screen: invisible in the shot's wide frames, strong in close grazing views
+  (`lit\ps1_keyboard.png`: keys skew and swim). For a PS1 homage shot, put the camera near large flat surfaces and move it.
+- Lower internal resolution makes the haze cheaper (it scales with the buffer), so every retro preset is far cheaper
+  than the default look.
+
+**Costs, clean** (lock held, RTX 4090; another process was using about 50% of the GPU when the lock was granted, so these
+are upper bounds. They match the build round's numbers within 0.1 ms):
+
+| Preset | Play GPU ms | Render GPU ms | Haze march (Render) |
+|---|---|---|---|
+| default | 5.1 | 131.7 | 123.5 |
+| chunky-pixels | 1.6 | 30.8 | 29.8 |
+| wii-bloom | 1.6 | 30.9 | 29.8 |
+| wii-480i | 1.4 | 24.5 | 23.6 |
+| ps1 | 1.2 | 11.3 | 10.8 |
+| ps1-authentic | 1.2 | 10.4 | 10.0 |
+
+**Switching presets compiles pipelines on first use:** the first switch to `ps1` took 459 ms (103 ms of it CPU), and to
+`wii-480i` 130 ms. A second switch takes 27–45 ms, which is just the frame. A pixel preset after another pixel preset
+costs no compile.
+
+**Recommendations for the real build:**
+1. Keep presets as data (`look.style` plus overrides) and make material sets registerable (the cel and Halo CE looks
+   should register as `MATERIAL_SETS`).
+2. Precompile the document's preset and the A/B wipe's B at load and when they change (`compileAsync` for the scene
+   plus a warm-up frame for the full-screen passes), so no switch stalls.
+3. Give each preset its own buffers instead of resizing on every switch (the A/B wipe reallocates 4K targets each frame).
+4. Default the retro presets to their authentic settings (`wii-480i`, `ps1-authentic`) and offer "readable text"
+   (mixed-resolution screen) as an option. That's Connor's call for this shot, since the chat is the content.
+5. Next for PS1: no depth buffer with per-primitive sorting, and palettised textures.
+
 ## Running the spike
 
 ```
