@@ -125,7 +125,10 @@ export function blend(a, b, t) {
 export class SampleBuffer {
   constructor({ keepMs = 3000, maxExtrap = 50 } = {}) { this.s = []; this.keepMs = keepMs; this.maxExtrap = maxExtrap; this.off = []; this.dropped = 0; this.lastF = null; }
   push(m, rxLocal) {
-    if (this.s.length && m.ts <= this.s[this.s.length - 1].ts) return false;   // out of order or repeated: ignore
+    const L = this.s[this.s.length - 1];
+    if (L && m.ts <= L.ts) {   // a coarse sender clock (15.6 ms on Windows) can repeat a time stamp: trust a newer frame number
+      if (m.f != null && L.f != null && m.f > L.f) m = { ...m, ts: L.ts + 0.01 }; else return false;   // else out of order: ignore
+    }
     if (this.lastF != null && m.f != null && m.f > this.lastF + 1) this.dropped += m.f - this.lastF - 1;
     this.lastF = m.f ?? this.lastF;
     const s = { ...m, rx: rxLocal }; this.s.push(s); this.off.push([rxLocal, rxLocal - m.ts]);

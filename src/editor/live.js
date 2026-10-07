@@ -7,6 +7,7 @@
 // evaluate() stays a pure function of t. Off by default: nothing connects until Connect is pressed.
 import { SampleBuffer, applyAlign, alignTo, camForward, camUp, qLook } from '../bridge/protocol.js';
 import { poseToRig } from '../core/evaluate.js';
+import { TAKE_TOL } from '../core/commands.js';
 import { simPath } from '../bridge/sim_path.js';
 
 const epoch = (t = performance.now()) => performance.timeOrigin + t;
@@ -21,7 +22,7 @@ export class LiveCamera {
     // settings (kept in this browser with the view settings, never in the scene)
     this.url = 'ws://127.0.0.1:8799/'; this.mode = 'interp'; this.delay = 50; this.fps = 0; this.quality = 'play'; this.lensWarp = false;
     this.align = null; this.sources = {}; this.events = []; this.rec = null; this.lastTake = null; this.prevRig = null;
-    this.arr = []; this.frames = []; this.metrics = false; this.recent = [];
+    this.arr = []; this.frames = []; this.metrics = false; this.recent = []; this.tolScale = 1;
   }
   /** Join the bridge as a receiver. */
   connect(url = this.url) {
@@ -36,9 +37,12 @@ export class LiveCamera {
   disconnect() { if (this.ws) { const w = this.ws; this.ws = null; w.close(); } this.state = 'off'; this.emit(); }
   onMessage(m, rx) {
     if (m.type === 'hello') { this.sources[m.src] = { ...m, at: rx }; this.emit(); return; }
-    if (m.type === 'bye') { delete this.sources[m.src]; this.emit(); return; }
+    if (m.type === 'bye') { delete this.sources[m.src]; if (this.follow === m.src) { this.follow = null; this.buf = new SampleBuffer(); this.prevRig = null; } this.emit(); return; }
     if (m.type === 'event') { this.events.push({ ...m, at: rx }); if (this.events.length > 50) this.events.shift(); if (this.rec) this.rec.events.push(m); this.E.emit('liveEvent', m); return; }
     if (m.type !== 'cam') return;
+    // one camera at a time: the first source that sends one, until it leaves or another is chosen (follow)
+    if (!this.follow || !this.sources[this.follow]) this.follow = m.src;
+    if (m.src !== this.follow) return;
     this.lastRaw = m; const s = applyAlign(m, this.align);
     if (!this.buf.push(s, rx)) return;
     if (this.metrics) this.arr.push({ ts: m.ts, f: m.f, rx, brx: m.rx });
@@ -97,19 +101,36 @@ export class LiveCamera {
   stopRecord(keep = true) {
     const E = this.E, R = this.rec; if (!R) return null; this.rec = null; this.emit();
     if (!keep || R.ts0 == null || R.samples.length < 2) { E.status('Live take cancelled'); return null; }
-    const S = R.samples, b = new SampleBuffer({ keepMs: Infinity }); for (const s of S) b.push(s, 0);
-    const tEnd = S[S.length - 1].ts, fEnd = Math.min(E.last, R.f0 + Math.floor((tEnd - R.ts0) / 1000 * E.fps));
+    // A fixed-step source (its hello says timebase 'fixed' and its fps: an emulator, Blender, a game with a fixed tick)
+    // is placed by its frame numbers, so a hitch in its sending can't stretch or squeeze the take; otherwise by sender time.
+    const src = this.sources[R.samples[0].src], fixed = src && src.timebase === 'fixed' && src.fps > 0 && R.samples.every(s => s.f != null);
+    const S = fixed ? R.samples.map(s => ({ ...s, ts: R.samples[0].ts + (s.f - R.samples[0].f) * 1000 / src.fps })) : R.samples;
+    if (fixed) R.ts0 = S[0].ts;
+    const b = new SampleBuffer({ keepMs: Infinity }); for (const s of S) b.push(s, 0);
+    const tEnd = S[S.length - 1].ts, fEnd = Math.min(E.last, R.f0 + Math.floor((tEnd - R.ts0) / 1000 * E.fps + 1e-3));   // epoch-ms times lose ~1e-4 ms to rounding
     const samples = []; let prev = null;
     for (let f = R.f0; f <= fEnd; f++) {
       const p = b.at(R.ts0 + (f - R.f0) * 1000 / E.fps);
       const rig = poseToRig(E.ix, E.ix.obj.cam, { eye: p.p, f: camForward(p.q), up: camUp(p.q), fov: p.fov }, prev); prev = rig;
-      samples.push({ t: f / E.fps, rig: Object.fromEntries(PROPS.map(k => [k, rig[k]])) });
+      const keep = Object.fromEntries(PROPS.map(k => [k, rig[k]])); if (!this.lensWarp) keep.distort = 0;   // a game's straight lens
+      samples.push({ t: f / E.fps, rig: keep });
     }
     const markers = R.events.map(ev => ({ t: (R.f0 + (ev.ts - R.ts0) / 1000 * E.fps) / E.fps, name: ev.name, data: ev.data })).filter(m => m.t >= R.f0 / E.fps && m.t <= fEnd / E.fps);
-    const args = { samples, markers }; E.cmd.run('writeCameraTake', args);
-    this.lastTake = { frames: samples.length, from: R.f0, to: fEnd, streamSamples: S.length, keys: Object.values(args.summary).reduce((s, x) => s + x.keys, 0), summary: args.summary, markers: markers.length };
+    const args = { samples, markers, always: this.lensWarp ? [] : ['distort'], ...(this.tolScale !== 1 ? { tol: Object.fromEntries(Object.entries(TAKE_TOL).map(([k, v]) => [k, v * this.tolScale])) } : {}) }; E.cmd.run('writeCameraTake', args);
+    this.lastTake = { clock: fixed ? `source frames at ${src.fps} fps` : 'sender time', frames: samples.length, from: R.f0, to: fEnd, streamSamples: S.length, srcFrames: [S[0].f, S[S.length - 1].f], keys: Object.values(args.summary).reduce((s, x) => s + x.keys, 0), summary: args.summary, markers: markers.length };
+    Object.defineProperty(this.lastTake, 'samples', { value: samples, enumerable: false });   // the unthinned rig per frame (for checks)
     E.status(`Live take: ${S.length} samples → ${samples.length} frames → ${this.lastTake.keys} keys`); this.emit();
     return this.lastTake;
+  }
+
+  // ---- the reverse direction: publish the shot camera (every drawn frame) to the bridge, for Blender or Unreal
+  setPublish(on) {
+    this.publish = !!on;
+    if (on && !this._pub) { this._pub = true; this.E.on('frame', st => {
+      if (!this.publish || !this.ws || this.ws.readyState !== 1) return; const c = st.camera, f = c.target.map((v, i) => v - c.eye[i]);
+      this.ws.send(JSON.stringify({ type: 'cam', id: 'shot', f: this.E.frame, t: st.t, ts: epoch(), p: c.eye, q: qLook(f, c.up), fov: c.fov, aspect: this.E.doc.output.width / this.E.doc.output.height }));
+    }); }
+    this.emit();
   }
 
   // ---- measurement (tests and the Stats panel): arrival and per-frame records, then a report
@@ -159,6 +180,7 @@ export function liveMenu(E) {
       <label class="check pick"><span>Play-out</span><select id="lvMode"><option value="interp">Interpolate, fixed delay</option><option value="latest">Latest sample</option><option value="extrap">Extrapolate (predict)</option></select></label>
       <label class="check pick"><span>Delay (ms)</span><input type="number" id="lvDelay" min="0" step="5" style="width:64px"></label>
       <label class="check pick"><span>Quality</span><select id="lvQ"><option value="play">Play</option><option value="render">Render (slow)</option></select></label>
+      <label class="check"><input type="checkbox" id="lvPub"><span>Send the shot camera out</span><span class="note">to Blender / Unreal</span></label>
       <label class="check"><input type="checkbox" id="lvLens"><span>Keep the shot's lens warp</span><span class="note">off: a game's straight lens</span></label>
       <div class="menu-row"><button type="button" id="lvAlign" title="Move and turn the stream's world so its camera sits where the shot camera is now">Align to shot camera</button><button type="button" id="lvReset">Reset</button></div>
       <div id="lvAlignNote" class="note"></div></div>
@@ -174,6 +196,7 @@ export function liveMenu(E) {
   $('lvDelay').onchange = e => { L.delay = Math.max(0, +e.target.value); L.emit(); };
   $('lvQ').onchange = e => { L.quality = e.target.value; L.emit(); };
   $('lvLens').onchange = e => { L.lensWarp = e.target.checked; L.lastDrawn = null; L.emit(); };
+  $('lvPub').onchange = e => L.setPublish(e.target.checked);
   $('lvAlign').onclick = () => L.alignToShot(); $('lvReset').onclick = () => L.resetAlign();
   $('lvRec').onclick = () => L.rec ? L.stopRecord(true) : L.startRecord(); $('lvCancel').onclick = () => L.stopRecord(false);
   const sync = () => {
@@ -181,7 +204,7 @@ export function liveMenu(E) {
     const r = L.recent, med = r.length ? [...r].sort((a, b) => a - b)[r.length >> 1] : null;
     $('lvState').textContent = L.state + (med != null ? ` · ${med.toFixed(1)} ms sender to editor` : '');
     $('lvSources').textContent = Object.values(L.sources).map(s => `${s.src} (${s.conventions}${s.rate ? ', ' + s.rate + ' Hz' : ''})`).join(' · ') || (L.ws ? 'No source yet' : '');
-    $('lvOn').checked = L.on; $('lvMode').value = L.mode; $('lvDelay').value = L.delay; $('lvDelay').disabled = L.mode !== 'interp'; $('lvQ').value = L.quality; $('lvLens').checked = L.lensWarp;
+    $('lvOn').checked = L.on; $('lvMode').value = L.mode; $('lvDelay').value = L.delay; $('lvDelay').disabled = L.mode !== 'interp'; $('lvQ').value = L.quality; $('lvLens').checked = L.lensWarp; $('lvPub').checked = !!L.publish;
     $('lvAlignNote').textContent = L.align ? `Aligned: yaw ${L.align.yaw.toFixed(1)}°, offset ${L.align.p.map(v => v.toFixed(2)).join(', ')} m` : 'Stream world = scene world';
     $('lvRec').textContent = L.rec ? 'Stop and write keys' : 'Record take'; $('lvCancel').disabled = !L.rec;
     if (L.lastTake) $('lvTake').textContent = `Last take: frames ${L.lastTake.from}–${L.lastTake.to}, ${L.lastTake.streamSamples} samples → ${L.lastTake.keys} keys${L.lastTake.markers ? `, ${L.lastTake.markers} markers` : ''}`;

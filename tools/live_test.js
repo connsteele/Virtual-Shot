@@ -34,3 +34,33 @@ export async function still(name, { f = 720, override = true } = {}) {
   const b = await new Promise(r => c.toBlob(r, 'image/png')); E.over = null;
   return (await fetch('/save/' + name, { method: 'POST', body: b })).status;
 }
+
+/** Record a take from the Blender demo sender (tools/blender_bridge.py --demo) and project the markers through the
+ *  written keys, frame by frame, as evaluate() renders them (no live override): the alignment check. */
+export async function blenderTake({ markers, from = 300, timeout = 120, url, tolScale = 1 } = {}) {
+  const E = VS.E, L = VS.live; if (!L.ws) await L.connect(url); L.tolScale = tolScale;
+  const { evaluate } = await import('/src/core/evaluate.js');
+  Object.assign(L, { mode: 'interp', delay: 50, fps: 60 }); E.frame = from; L.start(); L.startRecord();
+  const t0 = performance.now(); let n = 0, quiet = 0;
+  while (performance.now() - t0 < timeout * 1000) { await sleep(250); const k = L.rec ? L.rec.samples.length : 0; if (k && k === n) { if (++quiet >= 6) break; } else quiet = 0; n = k; }
+  const take = L.stopRecord(true); L.stop(); if (!take) return { error: 'no take' };
+  const proj = {}, raw = {}, px = vp => Object.fromEntries(Object.entries(markers).map(([k, p]) => { const c = [0, 1, 2, 3].map(i => vp[i] * p[0] + vp[4 + i] * p[1] + vp[8 + i] * p[2] + vp[12 + i]);
+    return [k, [(c[0] / c[3] * 0.5 + 0.5) * 1920, (1 - (c[1] / c[3] * 0.5 + 0.5)) * 1080]]; }));
+  take.samples.forEach((s, i) => { const f = take.from + i;
+    proj[f] = px(VS.evaluate(f / E.fps).vp);                                         // through the written keys
+    raw[f] = px(evaluate(E.doc, f / E.fps, E.shot.geo, E.ix, { rig: s.rig }).vp); }); // through the unthinned samples
+  return { take, proj, raw, source: L.sources.blender || null };
+}
+/** Save shot frames (after a take) twice: the look off (for overlays) and the full look (as renders to disk). */
+export async function stills(list, dir) {
+  const E = VS.E, keep = { ...E.show }, out = [];
+  const save = async name => { const c = document.createElement('canvas'); c.width = E.shot.OW; c.height = E.shot.OH; c.getContext('2d').drawImage(document.getElementById('gpu'), 0, 0);
+    const b = await new Promise(r => c.toBlob(r, 'image/png')); out.push(name + ':' + (await fetch(`/save/${dir}/${name}.png`, { method: 'POST', body: b })).status); };
+  for (const f of list) {
+    E.frame = f; Object.assign(E.show, LOOK_OFF); E.renderNow('render'); await save(`vs_lookoff_f${f}`);
+    if (E.shot.backend === 'WebGPU') await E.shot.renderer.backend.device.queue.onSubmittedWorkDone();
+    E.renderNow('render', { output: true }); await save(`vs_full_f${f}`);
+    if (E.shot.backend === 'WebGPU') await E.shot.renderer.backend.device.queue.onSubmittedWorkDone();
+  }
+  Object.assign(E.show, keep); return out;
+}

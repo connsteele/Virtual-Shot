@@ -64,15 +64,15 @@ export const COMMANDS = {
   rename(doc, { id, name }) { doc.objects.find(o => o.id === id).name = name; },
   /** Write a recorded camera take as keys: samples [{ t (seconds), rig: { x, y, dist, yaw, pitch, roll, fov } }], one per
    *  shot frame, are thinned to Bézier keys (fit.js) within tol per property and replace the keys of each track over
-   *  the take's time range. Properties that hardly moved are skipped. markers [{ t, name, data }] (events from the
+   *  the take's time range. Properties that hardly moved are skipped unless listed in always. markers [{ t, name, data }] (events from the
    *  stream) go to doc.events.markers (in the undo snapshot; evaluate ignores them). Returns nothing; the summary is left in args.summary for the caller. */
   writeCameraTake(doc, args) {
-    const { samples: S, target = 'cam', tol = TAKE_TOL, markers = [] } = args;
+    const { samples: S, target = 'cam', tol = TAKE_TOL, markers = [], always = [] } = args;
     if (!S || S.length < 2) throw new Error('writeCameraTake: needs at least two samples');
     const t0 = S[0].t, t1 = S[S.length - 1].t, summary = {};
     for (const p of Object.keys(S[0].rig)) {
       const ser = S.map(s => ({ t: s.t, v: s.rig[p] })), lo = Math.min(...ser.map(s => s.v)), hi = Math.max(...ser.map(s => s.v)), tl = tol[p] ?? 0.01;
-      if (hi - lo < tl) continue;   // untouched by this take
+      if (hi - lo < tl && !always.includes(p)) continue;   // untouched by this take (unless the caller wants it written)
       const keys = fitKeys(ser, tl);
       COMMANDS.setKey(doc, { target, prop: 'rig.' + p, t: t0, v: ser[0].v });   // makes the track if needed
       const tr = findTrack(doc, target, 'rig.' + p);
@@ -84,7 +84,7 @@ export const COMMANDS = {
   },
 };
 /** Thinning tolerance per rig property (glass widths, degrees): about a pixel at 1080p for the Black Page framing. */
-const TAKE_TOL = { x: 0.002, y: 0.002, dist: 0.004, yaw: 0.05, pitch: 0.05, roll: 0.05, fov: 0.05 };
+export const TAKE_TOL = { x: 0.002, y: 0.002, dist: 0.004, yaw: 0.05, pitch: 0.05, roll: 0.05, fov: 0.05 };
 
 /** The command runner with undo/redo. onChange(name, args) is called after every change (including undo/redo). */
 export function createCommandStack(getDoc, onChange) {
