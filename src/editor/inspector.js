@@ -7,7 +7,7 @@ import { esc } from './outliner.js';
 const RIG = [
   ['dist', 'Distance', 'glass widths', 0.01, 3], ['fov', 'Field of view', '° vertical', 0.1, 2], ['x', 'Pan X', 'glass widths', 0.005, 3],
   ['y', 'Pan Y', 'glass widths', 0.005, 3], ['yaw', 'Yaw', '°', 0.1, 2], ['pitch', 'Pitch', '°', 0.1, 2],
-  ['squint', 'Squint', '0–1', 0.01, 3], ['distort', 'Lens distortion', '0–1', 0.01, 3],
+  ['squint', 'Squint', '0–1', 0.01, 3], ['distort', 'Lens distortion', '0–1', 0.01, 3], ['roll', 'Roll', '°', 0.1, 2],
 ];
 const SNAP = 1 / 120;
 

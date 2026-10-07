@@ -76,6 +76,12 @@ input[type=number] { font-variant-numeric: tabular-nums; }
 .menu .pick select { margin-left: auto; padding: 1px 4px; }
 .menu-foot { padding: 8px 12px 4px; display: grid; gap: 6px; }
 .menu-foot button { justify-self: start; }
+/* Live popover (engine bridge) */
+#liveMenu { width: 330px; }
+.menu .menu-row { display: flex; align-items: center; gap: 8px; padding: 4px 12px; }
+.menu > .menu-group > .note { display: block; padding: 2px 12px; }
+.menu .pick input[type=text], .menu .pick input[type=number] { margin-left: auto; }
+#liveBtn.on { color: var(--accent); border-color: var(--accent); }
 kbd { font: 11px var(--mono); color: var(--muted); border: 1px solid var(--line-strong); border-radius: 3px; padding: 0 4px; margin-left: 6px; }
 
 /* outliner */

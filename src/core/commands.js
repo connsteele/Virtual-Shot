@@ -1,6 +1,7 @@
 // Named commands on the scene document. Every edit the editor makes goes through here, so undo is one mechanism and
 // the editor is scriptable (window.VS.cmd('setKey', {...}) from a console, a test, or Claude).
 // Undo is snapshot-based: cheap at this document size (~50 KB) and impossible to get out of step with the commands.
+import { fitKeys, fitError } from './fit.js';
 
 const TRACK_DEFAULTS = { 'cam.rig.dist': 3, 'cam.rig.fov': 30 };
 const sortKeys = tr => tr.keys.sort((a, b) => a.t - b.t);
@@ -61,7 +62,29 @@ export const COMMANDS = {
   /** Add an empty (a named frame other things can be placed against). */
   addEmpty(doc, { id, name, transform }) { doc.objects.push({ id, name: name || id, type: 'empty', transform: transform || { position: [0, 0, 0] } }); },
   rename(doc, { id, name }) { doc.objects.find(o => o.id === id).name = name; },
+  /** Write a recorded camera take as keys: samples [{ t (seconds), rig: { x, y, dist, yaw, pitch, roll, fov } }], one per
+   *  shot frame, are thinned to Bézier keys (fit.js) within tol per property and replace the keys of each track over
+   *  the take's time range. Properties that hardly moved are skipped. markers [{ t, name, data }] (events from the
+   *  stream) go to doc.events.markers (in the undo snapshot; evaluate ignores them). Returns nothing; the summary is left in args.summary for the caller. */
+  writeCameraTake(doc, args) {
+    const { samples: S, target = 'cam', tol = TAKE_TOL, markers = [] } = args;
+    if (!S || S.length < 2) throw new Error('writeCameraTake: needs at least two samples');
+    const t0 = S[0].t, t1 = S[S.length - 1].t, summary = {};
+    for (const p of Object.keys(S[0].rig)) {
+      const ser = S.map(s => ({ t: s.t, v: s.rig[p] })), lo = Math.min(...ser.map(s => s.v)), hi = Math.max(...ser.map(s => s.v)), tl = tol[p] ?? 0.01;
+      if (hi - lo < tl) continue;   // untouched by this take
+      const keys = fitKeys(ser, tl);
+      COMMANDS.setKey(doc, { target, prop: 'rig.' + p, t: t0, v: ser[0].v });   // makes the track if needed
+      const tr = findTrack(doc, target, 'rig.' + p);
+      tr.keys = [...tr.keys.filter(k => k.t < t0 - 1e-6 || k.t > t1 + 1e-6), ...keys].sort((a, b) => a.t - b.t);
+      summary[p] = { samples: ser.length, keys: keys.length, err: +fitError(keys, ser).toFixed(5) };
+    }
+    if (markers.length) doc.events.markers = [...(doc.events.markers || []).filter(m => m.t < t0 || m.t > t1), ...markers.map(m => ({ t: +m.t.toFixed(4), name: m.name, ...(m.data ? { data: m.data } : {}) }))].sort((a, b) => a.t - b.t);
+    args.summary = summary;
+  },
 };
+/** Thinning tolerance per rig property (glass widths, degrees): about a pixel at 1080p for the Black Page framing. */
+const TAKE_TOL = { x: 0.002, y: 0.002, dist: 0.004, yaw: 0.05, pitch: 0.05, roll: 0.05, fov: 0.05 };
 
 /** The command runner with undo/redo. onChange(name, args) is called after every change (including undo/redo). */
 export function createCommandStack(getDoc, onChange) {

@@ -13,22 +13,41 @@ export function indexDoc(doc) {
   return { obj, tracks, glass };
 }
 
-const RIG = ['dist', 'fov', 'x', 'y', 'distort', 'yaw', 'pitch', 'squint'];
+const RIG = ['dist', 'fov', 'x', 'y', 'distort', 'yaw', 'pitch', 'squint', 'roll'];
 
 /** Camera rig 'glassHeadOn': faces the glass head-on; x/y pan and dist are in glass widths; yaw/pitch turn the view
- *  like a head about a pivot `neck` metres behind the eye. Returns eye/target/up plus the lens overscan. */
+ *  like a head about a pivot `neck` metres behind the eye; roll (degrees, 0 unless keyed: a live or recorded game
+ *  camera) turns the up vector about the view direction, positive tilting it toward the camera's right.
+ *  Returns eye/target/up plus the lens overscan. */
 export function camPose(ix, cam, c, aspect) {
   const g = ix.glass, W_ = g.W;
   const pan = add(scl(g.r, c.x * W_), scl(g.u, c.y * W_)), e0 = add(add(g.ctr, pan), scl(g.n, c.dist * W_)), f0 = scl(g.n, -1);
   const yw = c.yaw * Math.PI / 180, pt = c.pitch * Math.PI / 180;
   const f1 = add(scl(f0, Math.cos(yw)), scl(g.r, Math.sin(yw))), f = nrm(add(scl(f1, Math.cos(pt)), scl(g.u, -Math.sin(pt))));
   const neck = cam.rig.neck ?? 0.08, eye = add(e0, scl(sub(f, f0), neck));
-  const r = nrm(cross(f, g.u)), up = cross(r, f);
+  const r = nrm(cross(f, g.u)); let up = cross(r, f);
+  if (c.roll) { const a = c.roll * Math.PI / 180; up = add(scl(up, Math.cos(a)), scl(r, Math.sin(a))); }
   // lens: render wider than the keyed FOV so the barrel warp can pull edge content in (centre keeps the keyed framing)
   const k = Math.max(0, c.distort) * 0.3, ov = 1 + k * (aspect * aspect + 1);
   const fovRender = 2 * Math.atan(Math.tan(c.fov * Math.PI / 360) * ov) * 180 / Math.PI;
-  return { eye, target: add(eye, scl(f, c.dist * W_)), up, fov: c.fov, fovRender, k, ov, squint: clamp(c.squint, 0, 1),
+  const td = Math.abs(c.dist) > 1e-3 ? Math.abs(c.dist) : 1e-3;   // a camera behind the glass plane still looks forward
+  return { eye, target: add(eye, scl(f, td * W_)), up, fov: c.fov, fovRender, k, ov, squint: clamp(c.squint, 0, 1),
     near: cam.clip.near, far: cam.clip.far };
+}
+
+/** The inverse of camPose: rig values (x, y, dist, yaw, pitch, roll, fov) that put the camera at a world pose
+ *  { eye, f (unit forward), up, fov }. Any pose maps (pitch must stay inside +-90 degrees). prev: the last rig, to unwrap
+ *  yaw and roll so a recorded take has no 360-degree jumps. distort and squint are left to the caller. */
+export function poseToRig(ix, cam, { eye, f, up, fov }, prev = null) {
+  const g = ix.glass, W_ = g.W, f0 = scl(g.n, -1), neck = cam.rig.neck ?? 0.08;
+  const pitch = Math.asin(clamp(-dot(f, g.u), -1, 1)) * 180 / Math.PI;
+  let yaw = Math.atan2(dot(f, g.r), dot(f, f0)) * 180 / Math.PI;
+  const r = nrm(cross(f, g.u)), up0 = cross(r, f);
+  let roll = Math.atan2(dot(up, r), dot(up, up0)) * 180 / Math.PI;
+  const unwrap = (a, p) => p == null ? a : a + 360 * Math.round((p - a) / 360);
+  if (prev) { yaw = unwrap(yaw, prev.yaw); roll = unwrap(roll, prev.roll); }
+  const rel = sub(sub(eye, scl(sub(f, f0), neck)), g.ctr);
+  return { x: dot(rel, g.r) / W_, y: dot(rel, g.u) / W_, dist: dot(rel, g.n) / W_, yaw, pitch, roll, fov };
 }
 
 function screenPos(pt, vp, k, aspect) { // output-frame uv (0-1, y up) of a world point, through the lens warp
@@ -87,11 +106,14 @@ function ghostLevel(g, t, i) {
   if (fl < (g.dropout ?? 0.18)) e *= 0.15; else e *= 0.75 + 0.25 * fl; return e * (g.intensity || 0.3);
 }
 
-export function evaluate(doc, t, geo, ix = indexDoc(doc)) {
+/** over: live overrides from the editor, never saved (over.rig: rig values from a live game camera or a take being
+ *  recorded). With no override the result is a pure function of (doc, t). */
+export function evaluate(doc, t, geo, ix = indexDoc(doc), over = null) {
   const fps = doc.fps, frame = Math.round(t * fps), aspect = doc.output.width / doc.output.height;
   const val = (key, def) => { const tr = ix.tracks[key]; return tr ? trackValue(tr, t) : def; };
   const cam = ix.obj.cam;
   const rig = Object.fromEntries(RIG.map(n => [n, val(`cam.rig.${n}`, ix.tracks[`cam.rig.${n}`]?.default ?? 0)]));
+  if (over?.rig) Object.assign(rig, over.rig);
   const chaos = val('scene.params.chaos', doc.params.chaos);
   const R = doc.sequence.reveal, revealK = easeInOut(clamp((t - R.start) / R.duration, 0, 1));
   const pose = camPose(ix, cam, rig, aspect);

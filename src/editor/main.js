@@ -10,6 +10,7 @@ import { Inspector } from './inspector.js';
 import { Viewport } from './viewport.js';
 import { Timeline } from './timeline.js';
 import { Perf } from './perf.js';
+import { LiveCamera, liveMenu } from './live.js';
 
 const $ = id => document.getElementById(id);
 const params = new URLSearchParams(location.search);
@@ -52,7 +53,7 @@ async function boot() {
     E.emit('change', name); E.requestRender();
   });
   E.on('eventsMoved', () => { layers(); E.layersChanged?.(); });   // a dragged message re-lays out the chat live
-  window.VS = { perf: { report: () => E.perf.report(), on: v => E.perf.toggle(v !== false) }, E, cmd: (n, a) => E.cmd.run(n, a), commands: () => E.cmd.list(), evaluate: t => evaluate(E.doc, t, shot.geo, E.ix) };
+  window.VS = { perf: { report: () => E.perf.report(), on: v => E.perf.toggle(v !== false) }, E, cmd: (n, a) => E.cmd.run(n, a), commands: () => E.cmd.list(), evaluate: t => evaluate(E.doc, t, shot.geo, E.ix), get live() { return E.live; } };
 
   // ---- viewport visibility (Blender's eye toggles and overlays, Unreal's Show menu): editor-only, kept in this browser
   E.show = { ...SHOW, pixels: false, pixLines: 480, pixBits: 6, pixAA: false, pixScreen: 1080, pixOutlines: false, pixBands: 0, pixBloom: 0, pixStable: false, safe: true, grid: true, frustum: true, hazeBox: true, lights: true, bounds: true };
@@ -78,7 +79,10 @@ async function boot() {
   // full look whatever the viewport shows.
   const viewport = new Viewport(E), perf = E.perf = new Perf(E);
   let pending = false, idleTimer = null, refineJob = null;
-  E.state = () => evaluate(E.doc, E.frame / E.fps, shot.geo, E.ix);
+  // E.over: live overrides (the engine bridge's live camera); E.docState(): the frame as the document keys it
+  E.state = () => evaluate(E.doc, E.frame / E.fps, shot.geo, E.ix, E.over);
+  E.docState = () => evaluate(E.doc, E.frame / E.fps, shot.geo, E.ix);
+  E.live = new LiveCamera(E);
   const hud = text => { $('hudQuality').textContent = E.view === 'camera' ? text : ''; };
   // The 2D layers are drawn on the CPU (Canvas 2D) and copied to the GPU; they depend only on time and the document,
   // so moving a camera, a toggle or an object reuses the last drawing instead of redrawing and re-uploading it.
@@ -143,6 +147,7 @@ async function boot() {
   E.select = sel => { E.sel = sel; E.emit('select', sel); E.requestRender(); };
 
   // ---- panels
+  if (document.getElementById('liveMenu')) liveMenu(E);
   E.panels = { outliner: new Outliner(E, $('outlinerBody')), inspector: new Inspector(E, $('inspectorBody'), $('inspectorTitle')),
     timeline: new Timeline(E, $('tlCanvas'), $('tlLabels')), viewport };
 
