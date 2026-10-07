@@ -601,6 +601,28 @@ key frame and side views of f720).
 - An override material whose target has no alpha must set `blending = NoBlending`: a transparent object makes three
   copy `transparent` onto the override, and the pipeline fails on a RedFormat target.
 
+**Round two (two more toggles):**
+
+| Toggle | What it does | Render quality | Play quality |
+|---|---|---|---|
+| Haze self-shadowing (screen, ring) | a 128³ density volume and a light-transmittance volume (toward the screen's four quadrants and the ringing remote), stored as z-slices in 2D atlases and rebuilt each frame; the march scales each light cell by one transmittance sample | +1.15 ms (density 0.65, light 0.43, ring 0.08) | same |
+| Ray-traced screen shadows (surfaces, WebGPU only) | a CPU BVH of the scene's 2,514 triangles (1,955 nodes, skip-pointer layout, no stack) in two storage buffers; the surface shader traces 16 stratified rays per pixel to the glass (4 in Play) | scene pass +18–41 ms; BVH rebuild 3–10 ms CPU when something moves | +4–11 ms |
+
+GPU numbers above were taken while the GPU was shared (the march itself measured 142–180 ms instead of 108–134), so
+compare the increments, not the totals. Frames and sheets: `shadows\round2\`.
+
+- **Self-shadowing dims the haze by about 18% (f1000 level 0.0445 → 0.0364) with little structure.** The wisps are thin
+  sheets in mostly clear air (mean density 0.12 per metre), so light loses about a quarter of its strength over the
+  ~1–3 m to the screen, nearly evenly. The baked haze levels would re-normalise the brightness, which leaves very
+  little visible change. Physically right and cheap, but not a look on its own; it would matter for thicker media.
+- **Ray tracing in a fragment shader works in WebGPU through TSL with no extensions**: storage buffers, nested
+  dynamic loops with `Break`, and a stackless BVH. It matches the 12 shadow maps closely here (the screen's shadows
+  are mostly hidden from this camera, as round one found), so the maps are the right default and ray tracing is the
+  reference to check them against. Its cost scales with pixels × rays: fine for stills, too slow for Play at 16 rays.
+- **Still open from the list:** one batched render for the 18 shadow maps (the 1.2–2 ms CPU while the remote rings),
+  and screen-coloured shadows (each patch weighted by what's on screen there).
+- Nodes first built inside an `If` bit again (a condition on `face` broke the off path); the rule from round one holds.
+
 ## Running the spike
 
 ```

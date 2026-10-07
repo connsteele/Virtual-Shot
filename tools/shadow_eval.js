@@ -2,7 +2,7 @@
 // under the spike output folder (through the dev server) and returns the GPU time of every pass.
 //   node tools/headless.mjs "/src/editor/index.html?bg" "(await import('/tools/shadow_eval.js')).run([300, 720], 'shadows/run1')"
 const CONFIGS = { off: {}, shafts: { shafts: true }, surface: { softShadows: true }, contact: { contact: true }, both: { shafts: true, softShadows: true },
-  all: { shafts: true, softShadows: true, contact: true }, self: { hazeShadow: true }, rt: { rtShadows: true }, all2: { shafts: true, softShadows: true, contact: true, hazeShadow: true } };
+  all: { shafts: true, softShadows: true, contact: true }, self: { hazeShadow: true }, rt: { rtShadows: true }, all3: { shafts: true, softShadows: true, contact: true, hazeShadow: true, rtShadows: true }, all2: { shafts: true, softShadows: true, contact: true, hazeShadow: true } };
 const KEYS = ['shafts', 'softShadows', 'contact', 'hazeShadow', 'rtShadows'];
 
 export async function run(frames, dir, configs = Object.keys(CONFIGS), { save = true, reps = 3 } = {}) {
@@ -39,7 +39,8 @@ export async function side(f, eye, target, dir, configs = ['off', 'shafts', 'sur
   for (const name of configs) {
     const st = { ...st0, focus: null, camera: { ...st0.camera, eye, target, up: [0, 1, 0], fov, fovRender: fov, k: 0, ov: 1, squint: 0 } };
     shot.shadows.invalidate();
-    shot.render(st, { ...E.layerOpts, quality: 'render', show: { ...CONFIGS[name], dof: false } });
+    // twice: the first render after the buffer size changes can come out offset (seen once per sheet, not chased)
+    for (let k = 0; k < 2; k++) shot.render(st, { ...E.layerOpts, quality: 'render', show: { ...CONFIGS[name], dof: false } });
     ox.drawImage(gpu, 0, 0);
     const name_ = `${dir}/f${String(f).padStart(5, '0')}_side_${name}.png`;
     const r = await fetch('/save/' + name_, { method: 'POST', body: await (await fetch(out.toDataURL('image/png'))).blob() }); if (!r.ok) throw new Error('save failed');
@@ -63,13 +64,13 @@ export async function aoBuffer(f, dir) {
  *  rumbles) and the CPU time of the shadow-map encodes. quality: 'render' | 'play'. */
 export async function cost(frames, quality = 'render', configs = ['off', 'shafts', 'surface', 'contact', 'all'], reps = 7) {
   const { E } = window.VS, shot = E.shot, res = []; shot.setTiming(true);
-  const cpu = []; for (const S of [shot.shadows, shot.ringShadows]) { const u = S.update; S.update = (...a) => { const t = performance.now(); const r = u(...a); cpu.push(performance.now() - t); return r; }; }
+  const cpu = []; for (const S of [shot.shadows, shot.ringShadows, shot.rtShadows].filter(Boolean)) { const u = S.update; S.update = (...a) => { const t = performance.now(); const r = u(...a); cpu.push(performance.now() - t); return r; }; }
   const med = a => { const s = [...a].sort((x, y) => x - y); return s[Math.floor(s.length / 2)]; };
   for (const f of frames) for (const name of configs) {
     for (const k of KEYS) E.show[k] = !!CONFIGS[name][k];
     E.frame = f; const per = {}, tot = []; cpu.length = 0;
     for (let i = 0; i < reps + 1; i++) {
-      shot.shadows.invalidate(); shot.ringShadows.invalidate(); await shot.gpuTimes();
+      shot.shadows.invalidate(); shot.ringShadows.invalidate(); shot.rtShadows?.invalidate(); await shot.gpuTimes();
       E.renderNow(quality, { output: true }); await shot.renderer.backend.device.queue.onSubmittedWorkDone();
       const t = await shot.gpuTimes(); if (i === 0) continue;   // the first may compile
       const p = {}; for (const x of t) { const key = x.name.replace(/ \d+\/\d+$/, ''); p[key] = (p[key] || 0) + x.ms; }
