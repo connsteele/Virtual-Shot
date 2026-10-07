@@ -2,6 +2,8 @@
 // messages, ghost flashes and pops) and the graph editor ported from Black Page (curves, Bézier handles, presets).
 // Shared: the ruler (seconds and frames, reveal and cut markers), the playhead, zoom (wheel) and pan (middle-drag).
 import { segVal, bzCtrl } from '../core/tracks.js';
+import { propValue } from './anim_panel.js';
+import { PROPS } from '../core/animate.js';
 import { CURVES, clamp } from '../core/curves.js';
 import { esc } from './outliner.js';
 
@@ -40,7 +42,7 @@ export class Timeline {
   tX(t) { const L = this._L; return L.left + (t - this.view[0]) / (this.view[1] - this.view[0]) * (L.right - L.left); }
   Xt(x) { const L = this._L || this.L(); return this.view[0] + (x - L.left) / (L.right - L.left) * (this.view[1] - this.view[0]); }
   tracks() { return this.E.doc.tracks; }
-  numericTracks() { return this.tracks().filter(t => t.type !== 'focus'); }
+  numericTracks() { return this.tracks().filter(t => !t.type || t.type === 'number'); }   // focus records, visibility and colours stay in the dope sheet
 
   /** Rows: per object (summary) then its properties; scene parameters; event lanes. */
   build() {
@@ -50,14 +52,14 @@ export class Timeline {
       for (const [tg, trs] of Object.entries(byTarget)) {
         const o = d.objects.find(o => o.id === tg);
         rows.push({ group: true, label: o ? o.name : 'Scene', obj: o ? o.id : null, tracks: trs });
-        for (const tr of trs) rows.push({ track: tr, label: LABEL[tr.prop] || tr.prop, obj: o ? o.id : null, depth: 1 });
+        for (const tr of trs) rows.push({ track: tr, label: LABEL[tr.prop] || PROPS[tr.prop]?.label || tr.prop, obj: o ? o.id : null, depth: 1 });
       }
       rows.push({ group: true, label: 'Events' });
       rows.push({ events: 'messages', label: 'Chat messages', depth: 1 });
       rows.push({ events: 'ghosts', label: 'Ghost flashes', depth: 1 });
       rows.push({ events: 'pops', label: 'Pops', depth: 1 });
     } else {
-      for (const tr of this.numericTracks()) { const key = `${tr.target}.${tr.prop}`; rows.push({ key, track: tr, label: LABEL[tr.prop] || tr.prop, col: COL[tr.prop] || '#aaa' }); }
+      for (const tr of this.numericTracks()) { const key = `${tr.target}.${tr.prop}`; rows.push({ key, track: tr, label: LABEL[tr.prop] || PROPS[tr.prop]?.label || tr.prop, col: COL[tr.prop] || '#aaa' }); }
     }
     this.rows = rows;
     const sel = E.sel;
@@ -243,6 +245,7 @@ export class Timeline {
   dbl(e) {   // add a key at that time (current value) on the row / active curve
     const E = this.E, t = snapT(this.Xt(e.offsetX));
     if (this.mode === 'dope') { const r = this.rows[Math.floor((e.offsetY - RULER + this.scroll) / ROW)]; if (!r || !r.track || r.track.type === 'focus') return;
+      if (r.track.type === 'bool' || r.track.type === 'color') { const o = E.doc.objects.find(o => o.id === r.track.target); E.cmd.run('setKey', { target: r.track.target, prop: r.track.prop, t, v: propValue(E.doc, o, r.track.prop, t) }); return; }
       E.cmd.run('setKey', { target: r.track.target, prop: r.track.prop, t, v: this.val(r.track, t) }); return; }
     const r = this.rows.find(r => r.key === this.act); if (!r) return;
     E.cmd.run('setKey', { target: r.track.target, prop: r.track.prop, t, v: this.val(r.track, t), curve: 'bezier' });

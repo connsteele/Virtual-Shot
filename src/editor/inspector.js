@@ -1,8 +1,8 @@
 // Inspector (Blender Properties / Unreal Details), with After Effects stopwatches: every animatable property has a
 // stopwatch (animate it), its value at the playhead, and key navigation (previous key, key here, next key).
 // Editing an animated property at the playhead sets a key there; editing a static one sets its value.
-import * as THREE from 'three/webgpu';
 import { esc } from './outliner.js';
+import { animSections, animInput, animButton, propValue } from './anim_panel.js';
 
 const RIG = [
   ['dist', 'Distance', 'glass widths', 0.01, 3], ['fov', 'Field of view', '° vertical', 0.1, 2], ['x', 'Pan X', 'glass widths', 0.005, 3],
@@ -21,13 +21,15 @@ export class Inspector {
   track(target, prop) { return this.E.doc.tracks.find(t => t.target === target && t.prop === prop); }
 
   /** A keyable property row: stopwatch, label, value at the playhead, key navigation. */
-  keyRow(target, prop, label, unit, step, dec, value) {
+  keyRow(target, prop, label, unit, step, dec, value, type) {
     const tr = this.track(target, prop), anim = !!(tr && tr.keys.length), t = this.E.frame / this.E.fps;
     const atKey = anim && tr.keys.some(k => Math.abs(k.t - t) < SNAP);
     return `<div class="prop${anim ? ' keyed' : ''}${atKey ? ' atkey' : ''}" data-target="${target}" data-prop="${prop}">
       <button type="button" class="stopwatch" data-act="watch" aria-pressed="${anim}" title="${anim ? 'Stop animating (removes its keys)' : 'Animate this property'}">⏱</button>
       <label title="${esc(unit)}">${esc(label)}</label>
-      <input type="number" step="${step}" data-dec="${dec}" value="${(+value).toFixed(dec)}" aria-label="${esc(label)}">
+      ${type === 'bool' ? `<input type="checkbox" data-type="bool" ${value ? 'checked' : ''} aria-label="${esc(label)}">`
+        : type === 'color' ? `<input type="color" data-type="color" value="${esc(value)}" aria-label="${esc(label)}">`
+        : `<input type="number" step="${step}" data-dec="${dec}" value="${(+value).toFixed(dec)}" aria-label="${esc(label)}">`}
       <span class="keynav">${anim ? `<button type="button" data-act="prevkey" title="Previous key">◀</button><button type="button" data-act="togglekey" class="${atKey ? 'on' : ''}" title="${atKey ? 'Delete the key here' : 'Add a key here'}">◆</button><button type="button" data-act="nextkey" title="Next key">▶</button>` : ''}</span>
     </div>`;
   }
@@ -43,25 +45,14 @@ export class Inspector {
       const o = d.objects.find(o => o.id === s.id); title = o.name || o.id;
       html += `<div class="sect"><h3>${esc(o.type)}</h3><div class="prop static"><label>Name</label><input type="text" value="${esc(o.name || '')}" data-obj="name" aria-label="Name"></div>
         <div class="note">id <code>${esc(o.id)}</code>${o.asset ? ` · asset <code>${esc(d.assets[o.asset])}</code>` : ''}</div></div>`;
-      if (o.transform) {
-        const tf = o.transform, e = new THREE.Euler().setFromQuaternion(new THREE.Quaternion(...(tf.quaternion || [0, 0, 0, 1])), 'XYZ');
-        const vec = (k, v, step, dec) => `<div class="vec">${v.map((x, i) => `<input type="number" step="${step}" value="${(+x).toFixed(dec)}" data-tf="${k}" data-i="${i}" aria-label="${k} ${'XYZ'[i]}">`).join('')}</div>`;
-        html += `<div class="sect"><h3>Transform</h3>
-          <div class="prop static"><label>Position (m)</label>${vec('position', tf.position || [0, 0, 0], 0.001, 4)}</div>
-          <div class="prop static"><label>Rotation (°, XYZ)</label>${vec('rotation', [e.x, e.y, e.z].map(r => r * 180 / Math.PI), 0.1, 2)}</div>
-          <div class="prop static"><label>Scale</label>${vec('scale', tf.scale || [1, 1, 1], 0.001, 4)}</div>
-          ${E.view === 'free' ? '<div class="note">Drag the gizmo in the viewport: G move, R rotate, S scale.</div>' : '<div class="note">Switch to Free view to move it with a gizmo.</div>'}</div>`;
-      }
+      html += animSections(this, o);
       if (o.type === 'camera') {
         html += `<div class="sect"><h3>Camera rig · head-on to ${esc(o.rig.frame)}</h3>${RIG.map(([n, l, u, stp, dec]) => this.keyRow('cam', 'rig.' + n, l, u, stp, dec, st.rig[n])).join('')}
           <div class="note">Distance and pan are in glass widths, as Black Page keyed them; FOV and distance ease geometrically.</div></div>
           <div class="sect"><h3>Focus</h3>${(this.track('cam', 'focus')?.keys || []).map(k => `<div class="note">${k.t.toFixed(2)} s · ${esc(k.v.target)} · ${k.v.px} px/dioptre${k.curve ? ' · ' + esc(k.curve) : ''}</div>`).join('')}
           <div class="note">Focus keys are records (a target object and blur settings); editing them is not in the spike.</div></div>`;
       }
-      if (o.ring) html += `<div class="sect"><h3>Ringing</h3>${['t', 'intensity', 'light', 'radius', 'rumble'].map(k => `<div class="prop static"><label>${k === 't' ? 'Starts at (s)' : k}</label><input type="number" step="0.01" value="${o.ring[k]}" data-objp="ring.${k}" aria-label="ring ${k}"></div>`).join('')}</div>`;
-      if (o.type === 'card') html += `<div class="sect"><h3>Card</h3><div class="prop static"><label>Brightness</label><input type="number" step="0.05" value="${o.brightness}" data-objp="brightness" aria-label="Brightness"></div></div>`;
-      if (o.type === 'led') html += `<div class="sect"><h3>LED</h3><div class="prop static"><label>Colour</label><input type="text" value="${esc(o.color)}" data-objp="color" aria-label="Colour"></div>
-        <div class="prop static"><label>Intensity</label><input type="number" step="0.05" value="${o.intensity}" data-objp="intensity" aria-label="Intensity"></div></div>`;
+      if (o.ring) html += `<div class="sect"><h3>Ringing</h3>${['t', 'radius', 'rumble'].map(k => `<div class="prop static"><label>${k === 't' ? 'Starts at (s)' : k}</label><input type="number" step="0.01" value="${o.ring[k]}" data-objp="ring.${k}" aria-label="ring ${k}"></div>`).join('')}</div>`;
     } else if (s.kind === 'scene') {
       title = 'Scene';
       html += `<div class="sect"><h3>Parameters</h3>${this.keyRow('scene', 'params.chaos', 'Chaos', '0–1: jitter, glitch bands, warmer glow', 0.01, 3, st.chaos)}</div>
@@ -112,8 +103,10 @@ export class Inspector {
     const E = this.E, st = E.st; if (!st) return;
     this.el.querySelectorAll('.prop[data-target]').forEach(row => {
       const tg = row.dataset.target, prop = row.dataset.prop, inp = row.querySelector('input');
-      const v = tg === 'cam' ? st.rig[prop.slice(4)] : tg === 'scene' ? st.chaos : null;
-      if (v !== null && document.activeElement !== inp) inp.value = (+v).toFixed(+inp.dataset.dec);
+      const o = tg !== 'cam' && tg !== 'scene' && E.doc.objects.find(o => o.id === tg);
+      const v = tg === 'cam' ? st.rig[prop.slice(4)] : tg === 'scene' ? st.chaos : o ? propValue(E.doc, o, prop, E.frame / E.fps) : null;
+      if (v !== null && v !== undefined && document.activeElement !== inp) {
+        if (inp.dataset.type === 'bool') inp.checked = !!v; else if (inp.dataset.type === 'color') inp.value = v; else inp.value = (+v).toFixed(+inp.dataset.dec); }
       const tr = this.track(tg, prop), t = E.frame / E.fps, atKey = !!tr && tr.keys.some(k => Math.abs(k.t - t) < SNAP);
       row.classList.toggle('atkey', atKey); const kb = row.querySelector('[data-act="togglekey"]'); if (kb) kb.classList.toggle('on', atKey);
     });
@@ -123,14 +116,11 @@ export class Inspector {
   onInput(inp) {
     const E = this.E, t = E.frame / E.fps, row = inp.closest('.prop[data-target]');
     try {
-      if (row) { const v = +inp.value, tr = this.track(row.dataset.target, row.dataset.prop);
+      if (animInput(this, inp)) return;
+      if (row) { const v = this.rowValue(inp), tr = this.track(row.dataset.target, row.dataset.prop);
+        if (this.isObj(row.dataset.target)) { E.cmd.run('setObjectValue', { id: row.dataset.target, prop: row.dataset.prop, t, v }); return; }
         if (tr && tr.keys.length) E.cmd.run('setKey', { target: row.dataset.target, prop: row.dataset.prop, t, v });
         else E.cmd.run('setStatic', { target: row.dataset.target, prop: row.dataset.prop, v }); return; }
-      if (inp.dataset.tf) { const o = E.doc.objects.find(o => o.id === E.sel.id), tf = JSON.parse(JSON.stringify(o.transform)), i = +inp.dataset.i;
-        if (inp.dataset.tf === 'rotation') { const vals = [...this.el.querySelectorAll('[data-tf="rotation"]')].map(x => +x.value * Math.PI / 180);
-          tf.quaternion = new THREE.Quaternion().setFromEuler(new THREE.Euler(...vals, 'XYZ')).toArray(); }
-        else { tf[inp.dataset.tf] = (tf[inp.dataset.tf] || (inp.dataset.tf === 'scale' ? [1, 1, 1] : [0, 0, 0])).slice(); tf[inp.dataset.tf][i] = +inp.value; }
-        E.cmd.run('setTransform', { id: o.id, transform: tf }); return; }
       if (inp.dataset.obj) { E.cmd.run('rename', { id: E.sel.id, name: inp.value }); return; }
       if (inp.dataset.objp) { E.cmd.run('setObjectProp', { id: E.sel.id, path: inp.dataset.objp, value: inp.type === 'number' ? +inp.value : inp.value }); return; }
       if (inp.dataset.look) { E.cmd.run('setLook', { path: inp.dataset.look, value: +inp.value }); return; }
@@ -143,12 +133,16 @@ export class Inspector {
     } catch (e) { E.status(e.message); }
   }
 
+  rowValue(inp) { return inp.dataset.type === 'bool' ? inp.checked : inp.dataset.type === 'color' ? inp.value : +inp.value; }
+  isObj(target) { return target !== 'cam' && target !== 'scene' && this.E.doc.objects.some(o => o.id === target); }
+
   onButton(b) {
+    if (animButton(this, b)) return;
     const E = this.E, row = b.closest('.prop[data-target]'), act = b.dataset.act, t = E.frame / E.fps;
     if (act === 'stopRender') return E.stopRender();
     if (act === 'render') return E.emit('renderFrames', { from: E.renderFrom ?? 0, to: E.renderTo ?? E.last, dir: E.renderDir || 'editor_render' });
     if (!row) return;
-    const target = row.dataset.target, prop = row.dataset.prop, tr = this.track(target, prop), v = +row.querySelector('input').value;
+    const target = row.dataset.target, prop = row.dataset.prop, tr = this.track(target, prop), v = this.rowValue(row.querySelector('input'));
     if (act === 'watch') E.cmd.run('setAnimated', { target, prop, t, v, on: !(tr && tr.keys.length) });
     if (act === 'togglekey') { const has = tr.keys.some(k => Math.abs(k.t - t) < SNAP);
       E.cmd.run(has ? 'deleteKeys' : 'setKey', has ? { keys: [{ target, prop, t }] } : { target, prop, t, v }); }

@@ -3,7 +3,7 @@
 import * as THREE from 'three/webgpu';
 import { mrt, output, vec2, vec4, positionWorld, cameraPosition, uniform, uv, Fn } from 'three/tsl';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-import { bodyMaterial, crtMaterial, glowMaterial, makeLightUniforms } from './materials.js';
+import { bodyMaterial, crtMaterial, glowMaterial, makeLightUniforms, objectUniforms } from './materials.js';
 import { makePost, makeOutline } from './post.js';
 import { makeHaze } from './haze.js';
 import { makeComposite, makeHazeMeter, makeEmitAverage, makeAreaUpscale, makeBloom, flatScreenQuad } from './final_comp.js';
@@ -76,7 +76,8 @@ export class ShotRenderer {
     const scene = this.scene = new THREE.Scene();
     const U = this.U = makeLightUniforms();
     this.camera = new THREE.PerspectiveCamera(30, this.W / this.H, 0.01, 100);
-    this.geo = { centres: {}, wii: null };
+    this.geo = { centres: {}, local: {}, clips: {}, wii: null };
+    this.objU = {}; this.mixers = {};   // per-object material uniforms; animation mixers for models with baked clips
 
     // chat texture: the 2D layer drawn into the tall canvas each frame
     const chatTex = this.chatTex = new THREE.CanvasTexture(chatCanvas);
@@ -108,6 +109,11 @@ export class ShotRenderer {
       const root = gltf.scene; root.matrixAutoUpdate = false; root.matrix.copy(m4(trsOf(o.transform))); root.userData.base = root.matrix.clone();
       root.userData.docId = o.id; this.placed[o.id] = root;
       root.updateMatrixWorld(true);
+      const OU = this.objU[o.id] = objectUniforms();
+      // baked glTF animations: a mixer posed at an absolute time each frame (never advanced by a clock)
+      if (gltf.animations?.length) { const mx = new THREE.AnimationMixer(root), acts = {};
+        for (const clip of gltf.animations) { const a = mx.clipAction(clip); a.setLoop(THREE.LoopOnce); a.clampWhenFinished = true; acts[clip.name] = a; }
+        this.mixers[o.id] = { mx, acts }; this.geo.clips[o.id] = Object.fromEntries(gltf.animations.map(c => [c.name, c.duration])); }
       const ledRe = o.ledParts ? new RegExp(o.ledParts, 'i') : null;
       const meshes = []; root.traverse(n => { if (n.isMesh) meshes.push(n); });
       const mn = [1e9, 1e9, 1e9], mx = [-1e9, -1e9, -1e9], rootInv = root.matrixWorld.clone().invert();
@@ -141,12 +147,12 @@ export class ShotRenderer {
         }
         const isLed = ledRe && ledRe.test(nodeName);
         const ov = isLed ? uniform(new THREE.Vector4(0, 0, 0, 0)) : null;
-        mesh.material = bodyMaterial(U, { map: src.map, emissiveMap: src.emissiveMap, ledRect: ledTargets.has(o.id) ? ledRect : [2, 2, 2, 2], ov });
+        mesh.material = bodyMaterial(U, { map: src.map, emissiveMap: src.emissiveMap, ledRect: ledTargets.has(o.id) ? ledRect : [2, 2, 2, 2], ov, obj: OU });
         if (isLed) this.ledParts.push({ mesh, ov, c0: a0.map((v, c) => (v + a1[c]) / 2) });
       }
       const M = Array.from(root.matrix.elements), ctrLocal = mn.map((v, c) => (v + mx[c]) / 2);
-      this.geo.centres[o.id] = xf(M, ctrLocal); root.userData.ctrLocal = ctrLocal;
-      if (o.ring) this.ringNode = root;
+      this.geo.centres[o.id] = xf(M, ctrLocal); root.userData.ctrLocal = ctrLocal; this.geo.local[o.id] = ctrLocal;
+      if (o.ring) { this.ringNode = root; this.geo.wiiId = o.id; }
       if (o.ring) this.geo.wii = { M, ctr: xf(M, ctrLocal), up: nrm([M[4], M[5], M[6]]), leds: this.ledParts.map(l => l.c0) };
       if (o.id === 'wii') this.wiiRoot = root;
       scene.add(root);
@@ -160,7 +166,8 @@ export class ShotRenderer {
     for (const o of doc.objects.filter(o => o.type === 'card')) {
       const im = await loadImage(assetUrl(doc.assets[o.texture])), tx = new THREE.Texture(im);
       Object.assign(tx, { flipY: false, generateMipmaps: false, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, colorSpace: THREE.NoColorSpace, needsUpdate: true });
-      const mesh = new THREE.Mesh(quad, bodyMaterial(U, { map: tx, scMul: 1.15, blMul: o.brightness || 1.4, rawLed: true }));
+      const OU = this.objU[o.id] = objectUniforms(o.brightness || 1.4);
+      const mesh = new THREE.Mesh(quad, bodyMaterial(U, { map: tx, scMul: 1.15, blMul: o.brightness || 1.4, rawLed: true, obj: OU }));
       mesh.matrixAutoUpdate = false; mesh.matrix.copy(m4(trsOf(o.transform))); mesh.userData.docId = o.id; this.placed[o.id] = mesh; scene.add(mesh);
     }
     // glows: four for the ringing LEDs, one for the power LED
@@ -323,6 +330,7 @@ export class ShotRenderer {
     const led = st.led; U.lp.value.set(...add(led.pos, scl(led.n, W_ * .004))); U.lpRaw.value.set(...led.pos); U.lc.value.set(...led.color);
     U.li.value = led.intensity; U.lrad.value = W_ * .035;
     U.eStr.value = (ix.obj.wii.emission ?? 1.5) * rk;
+    this.applyObjects(st, rk);
     const R = st.ring;
     U.rp.value.set(...(R ? R.pos : [0, 0, 0])); U.rc.value.set(...(R ? R.col : [0, 0, 0])); U.ri.value = R ? R.lvl * R.light : 0; U.rrad.value = R ? R.rad : 1;
     for (const p of this.ledParts) p.ov.value.set(...(R ? [...R.col.map(v => v * (R.ember + R.lvl * R.I)), 1] : [0, 0, 0, 0]));
@@ -373,6 +381,36 @@ export class ShotRenderer {
     return { camera: { ...c, eye: add(c.eye, d), target: add(c.target, d) }, off: [-dr, du] };
   }
 
+  /** Object animation (st.objects): world matrices, visibility, material values and glTF clip poses of the animated
+   *  objects. Objects that aren't animated keep their static matrices and the document's values. */
+  applyObjects(st, rk) {
+    const A = st.objects || {}, hidden = this.hiddenIds || new Set();
+    for (const [id, OU] of Object.entries(this.objU)) {
+      const o = this.ix.obj[id], a = A[id], P = a?.props || {};
+      OU.gain.value = P.gain ?? o?.gain ?? 1;
+      OU.em.value = (P.emission ?? o?.emission ?? this.ix.obj.wii?.emission ?? 1.5) * rk;
+      if (o?.type === 'card') OU.bri.value = P.brightness ?? o.brightness ?? 1.4;
+    }
+    for (const [id, node] of Object.entries(this.placed)) {
+      const a = A[id]; node.visible = !hidden.has(id) && (a ? a.visible : this.ix.obj[id]?.visible !== false);
+      if (!a) { if (node.userData.animated) { this.restStatic(id); node.userData.animated = false; } continue; }
+      node.userData.animated = true;
+      const M = m4(a.matrix); if (node.userData.base) node.userData.base = M; node.matrix.copy(M); node.updateMatrixWorld(true);
+      const mix = this.mixers[id];
+      if (mix) { const on = new Map((a.clips || []).map(c => [c.name, c]));
+        for (const [name, act] of Object.entries(mix.acts)) { const c = on.get(name);
+          if (!c) { act.enabled = false; continue; }
+          act.enabled = true; act.play(); act.paused = false; act.setEffectiveWeight(c.weight); act.time = Math.min(c.time, act.getClip().duration - 1e-6); }
+        mix.mx.update(0); node.updateMatrixWorld(true); }
+    }
+  }
+  /** Put an object that stopped being animated back to its document transform. */
+  restStatic(id) {
+    const o = this.ix.obj[id], node = this.placed[id]; if (!o?.transform || !node) return;
+    node.matrix.copy(m4(trsOf(o.transform))); if (node.userData.base) node.userData.base = node.matrix.clone(); node.updateMatrixWorld(true);
+    const mix = this.mixers[id]; if (mix) { mix.mx.stopAllAction(); }
+  }
+
   /** After the document changed (editor commands, undo): re-index it and move placed objects to their transforms. */
   syncFromDoc(doc = this.doc) {
     this.doc = doc; this.ix = indexDoc(doc);
@@ -420,7 +458,7 @@ export class ShotRenderer {
   }
 
   /** Hide placed objects in the viewport (ids), show the rest. */
-  setHidden(ids) { for (const [id, node] of Object.entries(this.placed)) node.visible = !ids.has(id); this.anyHidden = ids.size > 0; }
+  setHidden(ids) { this.hiddenIds = ids; for (const [id, node] of Object.entries(this.placed)) node.visible = !ids.has(id); this.anyHidden = ids.size > 0; }
 
   /** The visible placed object under a canvas point (ndc -1..1), or null. */
   pick(ndc, cam) {

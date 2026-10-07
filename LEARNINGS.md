@@ -606,6 +606,110 @@ load (three's `compileAsync` covers scene materials but not full-screen passes).
 - The default look is unchanged by all of this: frames 120/300/720/1100 are bit-identical to before the pixel look
   (PSNR infinite).
 
+## 9. Object animation (keys, parenting, constraints, behaviours, glTF clips)
+
+Branch `spike-object-anim`. One bounded round, code-first while a GPU job ran on the same PC. Off by default in the
+sense that matters: a document that doesn't use it evaluates and renders exactly as before (below).
+
+**What exists:**
+- **Any object property is keyable** with the existing key model (seconds, curve into the key, presets, Bézier
+  handles). `src/core/animate.js` has a registry (`PROPS`): position/rotation/scale per axis (rotation in degrees, XYZ,
+  as the inspector shows it), `visible` (a `bool` track: each key holds), material `gain` and `emission` (models), card
+  `brightness`, the LED's `intensity` and `color` (a `color` track: `#rrggbb` blended along the key's curve), and the
+  remote's `ring.intensity`, `ring.light` and `ring.color`. Typed values are a `type` on the track (`typedValue` in
+  `tracks.js`); numbers stay as they were. Unkeyed components keep the document's value; turning the stopwatch off
+  writes the value at the playhead back to the object, so a static value lives in one place (the transform record),
+  not in a track default.
+- **Parenting** (`parent: "<id>"`, the transform becomes local) and **constraints** applied after it, each with a
+  keyable `influence`: `attach` (snap to a target's world, × an offset: key influence with Hold keys to pick something
+  up and put it down), `lookAt` (aim a chosen local axis at a target, `up` kept) and `followPath` (ride a `path`
+  object, a Catmull-Rom rail, at a keyable progress `u` by arc length, optionally facing along it).
+- **Behaviours registry** (`src/core/behaviours.js`): shake, bob, spin, flicker, noise. Parameters and an on/off live
+  in the object's `behaviours` list; every parameter and a `weight` are keyable (`behaviours.<id>.<param>`); seeds come
+  from `"<object id>/<behaviour id>"`, never list positions (§6). Flicker and noise drive any numeric property
+  (`prop`), or position for noise.
+- **Baked glTF clips** on models: `clips: [{ id, name, start, speed, offset, loop: repeat|once|pingpong, fadeIn, end }]`
+  with a keyable `weight`. A later clip fades in over earlier ones; before the first clip starts its first frame holds.
+  The renderer poses an `AnimationMixer` at an absolute time every frame (`action.time = …; mixer.update(0)`), never
+  advanced by a clock, so a frame is still a function of t.
+- **Editor:** the inspector's object panel is now stopwatch rows for every keyable property (checkbox and colour
+  inputs for typed ones), a Parent picker, Constraints (+ Attach, + Look at, + Follow path; target, aim axis,
+  influence, progress), Behaviours (add from a list; weight and parameters as keyable rows) and Animation clips (for
+  models that have them). The gizmo edits the local transform at the playhead in the parent's space: keyed
+  components get a key there, the rest are written statically (`setTransformAt`); it follows animated objects as the
+  playhead moves and hides for constrained objects. The outliner nests children under parents and marks anything
+  animated; free view draws paths and empties. The graph editor shows numeric tracks only; bool and colour tracks are
+  in the dope sheet (double-click adds a key with the current value).
+- **Commands** (all undoable, all scriptable from `VS.cmd`): `setObjectValue`, `setTransformAt`, `setParent`
+  (keeps the world transform), `addConstraint`/`setConstraint`/`removeConstraint`, `addBehaviour`/`setBehaviour`/
+  `removeBehaviour`, `addClip`/`setClip`/`removeClip`, `addPath`. Removing a constraint, behaviour or clip drops its
+  tracks. `scenes/object_anim_demo.scene.json` is built by `tools/make_object_anim_demo.mjs` from 24 of these commands
+  alone (a test cube with baked clips that hops, gets picked up by an empty riding a rail and spins; the tape turns to
+  watch it; the polaroid flickers with the ghosts; the remote is parented to the pad, which slides; the power LED
+  turns red; the keyboard disappears).
+
+**Checks** (`node tools/test_object_anim.mjs`, 1215 checks, no GPU):
+- **Black Page evaluates identically:** all 1176 frames' `evaluate()` output is equal (JSON-identical) to the
+  previous time core at `65b061b`, read from git, with `objects` empty. Rendered frames 720 and 1100 hash identically
+  on the old and new renderer (headless Chrome, two servers), so the new per-object material uniforms (×1.0) change
+  nothing.
+- Keys, holds, stopwatch round trip, Euler round trip (worst 1e-9°), visibility steps, colour blending, ring and LED
+  values reaching `evaluate`, parenting (child follows; `setParent` keeps the world to 1e-6), the ringing LEDs and
+  focus centres following a moved remote, look-at with ±Z, attach with Hold influence, follow-path by arc length and
+  tangent, behaviours bounded and deterministic and seeded per object, weight 0 off, spin 60 rpm = 90° in 0.25 s,
+  flicker stepping at its rate, bob peaking at a quarter cycle, clip repeat/once/ping-pong/fade layering, cycle
+  detection, decompose and affine inverse.
+- In the editor (headless Chrome, demo scene): the cube's node matrix equals `evaluate`'s, the baked Spin pose at
+  f800 matches the clip time (q.y 0.5), Hop peaks at 0.08 m at clip time 0.5, a 50/50 crossfade lands halfway, the same
+  frame reached in a different order gives a bit-identical pose, the keyboard hides on its key, the LED turns red, the
+  polaroid's brightness uniform follows the flicker, the inspector shows every section, and a stopwatch + key + two
+  undos leave the document and the picture as they were. Screenshot: `Virtual Shot spike\object_anim\free_view_f820.png`.
+- Cost: `evaluate` is 0.078 ms a frame with 8 animated objects (0.010 ms for Black Page).
+
+**What this says about the architecture:**
+1. **"Static objects take the old path" is what made the parity check cheap.** `indexAnim` decides once per document
+   change which objects need evaluating (keys, parent, constraints, behaviours, clips, or anything they depend on) and
+   orders them parent-first; everything else is untouched. A real build should keep that split: a moving-object list
+   per document version, not a per-frame walk of every object.
+2. **Derived geometry follows the animation, not the document.** Focus targets and the ringing LEDs read bounds
+   centres measured at load. `evaluate` now carries those as local points (`geo.local`) and moves them with the
+   object's matrix at t, so "focus on the remote" tracks a remote that moves. This settles part of §7's stale-data
+   question: geometry that is a function of an object's pose should be stored in the object's own space.
+3. **Static values belong to the object, keys to tracks.** A track default duplicating the transform record would
+   give two sources of truth (the existing camera rig tracks do this; object tracks don't). Turning a stopwatch off
+   writes back to the object. The doc should say so.
+4. **Ids for anything a track points into.** Constraints, behaviours and clips are lists, and their keyable values
+   are addressed by id (`constraints.c1.influence`), not index, so reordering doesn't move keys onto the wrong item.
+   Seeds use the same ids.
+5. **Rotation keys are Euler degrees per axis**, like Blender's and After Effects' channels; that's what a dope sheet
+   and graph editor can show. It interpolates per axis (no slerp), so big multi-axis turns can wobble, and near ±90°
+   on Y the decomposition is ambiguous. A quaternion track type (slerp, one row) is the likely addition when
+   characters arrive.
+6. **glTF clips need the asset context in `evaluate`**: looping needs each clip's duration, which only the loaded
+   asset has (`geo.clips`). That's the same rule as §1.7 (evaluate is pure in document, assets and t).
+7. **Constraints and the gizmo don't mix yet.** A constrained object hides its gizmo, because the constraint owns its
+   pose. Blender's answer (the gizmo edits the pre-constraint value, or an "apply visual transform" command) is a
+   decision for the real build.
+
+**Gaps and limits (not done this round):**
+- The camera rig and the `glass` frame aren't animatable through this system (the rig has its own tracks; animating
+  the glass would need the rig to read `glass` at t). The power LED has a position but no transform, so it doesn't
+  follow the monitor.
+- Behaviours are always on unless `on: false` or weight 0; time windows are weight keys.
+- No skinned character was tested; the test model is a cube with node animation made by `tools/make_test_clip_glb.mjs`.
+  `bodyMaterial` is a node material, which three skins automatically, but that's unverified here.
+- Clip poses only update when the 3D scene is drawn (not before the reveal in camera view); free view draws them.
+- Adding a model from assets still isn't an editor command (§7's gap), so the demo adds the cube in its builder script.
+- Euler rotation keys on the gizmo: dragging through ±90° on Y may flip X and Z.
+
+**GPU use (Virtual Cut was running):** code and node tests first. Before the headless runs `nvidia-smi` read 6%, then
+23% when the lock was taken and 37% during the runs. The shared lock `F:\Repos\Virtual-Shot\.gpu.lock` didn't exist,
+so this round created it, held it for four short headless runs (two four-frame hash runs, two editor checks with one
+screenshot), and removed it; no waits, no overlap with another holder. No renders, benchmarks or exports.
+
+Effort: one round. The earlier session on this was halted before it wrote anything to the worktree, so this round
+started from scratch.
+
 ## Running the spike
 
 ```
@@ -620,6 +724,8 @@ node tools/bake_haze_levels.mjs    # after VS.measureHaze(frames): calibrate and
 node tools/headless.mjs "/src/index.html?f=300" "await VS.exportFrames([...], 'run')" --low   # run it in a separate headless Chrome
                                    # (from Git Bash, prefix MSYS_NO_PATHCONV=1; --shot=<png> saves a screenshot)
 http://localhost:8790/src/editor/index.html   # the editor
+node tools/test_object_anim.mjs   # object animation checks (Node, no GPU)
+node tools/make_object_anim_demo.mjs   # scenes/object_anim_demo.scene.json; open the editor with ?scene=/scenes/object_anim_demo.scene.json
 ```
 
 The final master is decoded to `ref_final\` with ffmpeg (BT.709, limited range); `REF=<dir>` points the comparison
@@ -637,6 +743,8 @@ tools at it. In the page: `await VS.exportFrames([...frames], '<run>')` writes P
 | `src/app.js`, `src/index.html` | Viewer: scrub, play, export hooks |
 | `src/editor/` | The editor: outliner, inspector, viewport, timeline and graph editor |
 | `src/core/commands.js` | Named commands on the scene document, with undo |
+| `src/core/animate.js`, `src/core/behaviours.js` | Object animation: keyable properties, parenting, constraints, glTF clip timing; the behaviours registry |
+| `src/editor/anim_panel.js` | Inspector sections for object animation |
 | `src/artifact.html` | The artifact page |
 | `server/serve.mjs` | Local server: read-only mounts of the Black Page folder, the PSX pack and the Wii Remote; PNG writes to G: |
 | `tools/` | Engine dump, importer, checks, comparisons, artifact build |

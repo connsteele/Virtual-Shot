@@ -4,7 +4,17 @@
 import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
-import { trsOf } from '../core/vec.js';
+import { trsOf, M4, invAffine, decompose, quatFromEuler } from '../core/vec.js';
+import { COMMANDS } from '../core/commands.js';
+import { indexDoc } from '../core/evaluate.js';
+import { propValue } from './anim_panel.js';
+
+/** World matrix of an object's parent at the playhead (animated parents move the gizmo's frame). */
+const parentWorld = (E, o) => { if (!o.parent) return M4.id(); const p = E.doc.objects.find(x => x.id === o.parent), a = E.ix?.anim?.animated.has(p.id) ? E.state().objects[p.id] : null;
+  return a ? Float64Array.from(a.matrix) : M4.mul(parentWorld(E, p), trsOf(p.transform || {})); };
+/** An object's local transform at the playhead from its keys (before behaviours and constraints). */
+const localAt = (E, o) => { const t = E.frame / E.fps, v = (g, a) => propValue(E.doc, o, `${g}.${a}`, t), xyz = g => ['x', 'y', 'z'].map(a => v(g, a));
+  return { position: xyz('position'), quaternion: quatFromEuler(xyz('rotation')), scale: xyz('scale') }; };
 
 const lineMat = (color, opacity = 1) => new THREE.LineBasicMaterial({ color, transparent: opacity < 1, opacity, depthTest: false });
 
@@ -38,13 +48,15 @@ export class Viewport {
     let before = null;
     this.gizmo.addEventListener('dragging-changed', e => {
       this.orbit.enabled = !e.value && E.view === 'free'; E.interacting = e.value;
-      if (e.value) before = E.cmd.begin(); else { E.cmd.commit('setTransform (gizmo)', before); E.requestRender(); }
+      if (e.value) before = E.cmd.begin(); else { E.cmd.commit('setTransformAt (gizmo)', before); E.requestRender(); }
     });
     this.gizmo.addEventListener('objectChange', () => {
       const o = E.doc.objects.find(o => o.id === E.sel.id); if (!o) return;
-      const s = this.proxy.scale.toArray().map(v => +v.toFixed(6));
-      o.transform = { position: this.proxy.position.toArray().map(v => +v.toFixed(6)), quaternion: this.proxy.quaternion.toArray().map(v => +v.toFixed(9)), ...(s.some(v => Math.abs(v - 1) > 1e-6) ? { scale: s } : {}) };
-      E.shot.syncFromDoc(E.doc); E.requestRender();
+      // the proxy is in world space; the document stores the transform in the parent's space, keyed at the playhead
+      this.proxy.updateMatrix(); const L = decompose(M4.mul(invAffine(parentWorld(E, o)), Float64Array.from(this.proxy.matrix.elements))), s = L.scale.map(v => +v.toFixed(6));
+      const transform = { position: L.position.map(v => +v.toFixed(6)), quaternion: L.quaternion.map(v => +v.toFixed(9)), ...(s.some(v => Math.abs(v - 1) > 1e-6) ? { scale: s } : {}) };
+      COMMANDS.setTransformAt(E.doc, { id: o.id, transform, t: E.frame / E.fps });
+      E.ix = indexDoc(E.doc); E.shot.syncFromDoc(E.doc); E.requestRender();
     });
 
     // left-click selects (unless the gizmo is under the pointer)
@@ -55,6 +67,7 @@ export class Viewport {
       const id = E.shot.pick(ndc, cam); if (id) E.select({ kind: 'object', id });
     });
     E.on('select', () => this.attach()); E.on('change', () => this.attach()); E.on('show', () => this.attach());
+    E.on('frame', () => { if (!this.gizmo.dragging && this.gizmo.object) this.attach(); });   // animated objects carry the gizmo along
     E.on('key', e => { const k = e.key.toLowerCase();
       // Blender: H hides the selection, Alt+H reveals everything hidden
       if (k === 'h' && e.altKey) { e.preventDefault(); E.revealAll(); return; }
@@ -67,8 +80,9 @@ export class Viewport {
   setView(v) { this.orbit.enabled = v === 'free'; this.attach(); }
   attach() {
     const E = this.E, o = E.sel.kind === 'object' && E.doc.objects.find(o => o.id === E.sel.id);
-    if (E.view === 'free' && o && o.transform && E.mode !== 'play' && !E.hidden.has(o.id)) {
-      const m = new THREE.Matrix4().fromArray(Array.from(trsOf(o.transform)));
+    const constrained = o && (o.constraints || []).some(c => c.on !== false);   // the constraint owns its pose
+    if (E.view === 'free' && o && o.transform && !constrained && E.mode !== 'play' && !E.hidden.has(o.id)) {
+      const L = localAt(E, o), m = new THREE.Matrix4().fromArray(Array.from(M4.mul(parentWorld(E, o), M4.trs(L.position, L.quaternion, L.scale))));
       m.decompose(this.proxy.position, this.proxy.quaternion, this.proxy.scale); this.proxy.updateMatrixWorld(true);
       if (this.gizmo.object !== this.proxy) this.gizmo.attach(this.proxy);
     } else if (this.gizmo.object) this.gizmo.detach();
@@ -95,9 +109,28 @@ export class Viewport {
     this.glassAxes.matrix.fromArray([...g.r, 0, ...g.u, 0, ...g.n, 0, ...g.ctr, 1]);
     this.ledDot.position.set(...st.led.pos);
     this.ringDot.visible = S.lights && !!st.ring; if (st.ring) this.ringDot.position.set(...st.ring.pos);
+    this.animHelpers(st);
     const node = E.sel.kind === 'object' && E.shot.placed[E.sel.id];
     this.selBox.visible = S.bounds && !!node && node.visible; if (this.selBox.visible) this.selBox.box.setFromObject(node);
     return this.scene;
+  }
+  /** Paths (rails) as lines and empties (other than the glass frame) as small axes, where they are at the playhead. */
+  animHelpers(st) {
+    const E = this.E, list = E.doc.objects.filter(o => (o.type === 'path' && o.points?.length > 1) || (o.type === 'empty' && o.id !== 'glass'));
+    const W = o => st.objects?.[o.id]?.matrix || Array.from(o.parent ? (() => { let m = trsOf(o.transform || {}), p = o.parent; while (p) { const q = E.doc.objects.find(x => x.id === p); m = M4.mul(trsOf(q.transform || {}), m); p = q.parent; } return m; })() : trsOf(o.transform || {}));
+    const key = JSON.stringify(list.map(o => [o.id, o.points, W(o)])) + E.show.lights;
+    if (key === this.animKey) return; this.animKey = key;
+    if (this.animGroup) { this.animGroup.traverse(n => n.geometry?.dispose()); this.scene.remove(this.animGroup); }
+    const G = this.animGroup = new THREE.Group(); G.visible = E.show.lights; this.scene.add(G);
+    for (const o of list) {
+      const m = new THREE.Matrix4().fromArray(W(o));
+      if (o.type === 'empty') { const ax = new THREE.AxesHelper(0.05); ax.material.depthTest = false; ax.matrixAutoUpdate = false; ax.matrix.copy(m); G.add(ax); continue; }
+      const pts = []; const n = 24 * (o.points.length - 1), P = o.points, cr = (i, u) => { const q = k => P[Math.max(0, Math.min(P.length - 1, k))];
+        const [p0, p1, p2, p3] = [q(i - 1), q(i), q(i + 1), q(i + 2)], u2 = u * u, u3 = u2 * u;
+        return [0, 1, 2].map(c => 0.5 * (2 * p1[c] + (-p0[c] + p2[c]) * u + (2 * p0[c] - 5 * p1[c] + 4 * p2[c] - p3[c]) * u2 + (-p0[c] + 3 * p1[c] - 3 * p2[c] + p3[c]) * u3)); };
+      for (let k = 0; k <= n; k++) { const g = k / n * (P.length - 1), i = Math.min(P.length - 2, Math.floor(g)); pts.push(new THREE.Vector3(...cr(i, g - i)).applyMatrix4(m)); }
+      const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), lineMat(0xe0b040)); line.renderOrder = 9; G.add(line);
+    }
   }
   /** The Show menu (Unreal's Show flags, Blender's Overlays popover): parts of the look and the helpers, viewport only. */
   menu() {

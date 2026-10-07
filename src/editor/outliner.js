@@ -4,7 +4,7 @@
 const EYE = on => on
   ? '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8 12.1 12.5 8 12.5 1.5 8 1.5 8z" fill="none" stroke="currentColor" stroke-width="1.3"/><circle cx="8" cy="8" r="2" fill="currentColor"/></svg>'
   : '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 7.5c1.6 2.2 3.6 3.3 6 3.3s4.4-1.1 6-3.3M4.4 9.8 3.3 11.6M8 10.8v2M11.6 9.8l1.1 1.8" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>';
-const ICON = { model: '▣', empty: '✛', camera: '◳', card: '▭', led: '●', layer: '▤', event: '◆', look: '◐', scene: '◇' };
+const ICON = { model: '▣', empty: '✛', path: '∿', camera: '◳', card: '▭', led: '●', layer: '▤', event: '◆', look: '◐', scene: '◇' };
 
 export class Outliner {
   constructor(E, el) {
@@ -20,11 +20,14 @@ export class Outliner {
       if (s.kind === 'object' && E.view === 'free') E.emit('frameSelected', s.id); });
   }
   draw() {
-    const { doc } = this.E, animated = new Set(doc.tracks.filter(t => t.keys.length).map(t => t.target));
+    const { doc } = this.E, animated = new Set([...doc.tracks.filter(t => t.keys.length).map(t => t.target), ...(this.E.ix?.anim?.animated || [])]);
     const E = this.E, placed = E.shot.placed;
     const eye = (key, on, label) => `<button type="button" class="eye" data-eye="${key}" aria-pressed="${on}" title="${on ? 'Hide' : 'Show'} ${esc(label)} in the viewport" aria-label="Show ${esc(label)} in the viewport">${EYE(on)}</button>`;
     const row = (sel, icon, label, depth, extra = '', vis = null) => `<li><div class="row${vis && !vis.on ? ' off' : ''}" data-sel='${JSON.stringify(sel)}' style="--depth:${depth}"><span class="ico">${icon}</span><span class="lbl">${esc(label)}</span>${extra}${vis ? eye(vis.key, vis.on, label) : ''}</div></li>`;
-    const objs = doc.objects.map(o => row({ kind: 'object', id: o.id }, ICON[o.type] || '·', o.name || o.id, 1,
+    // children sit under their parent (Blender's hierarchy)
+    const kids = id => doc.objects.filter(o => (o.parent || null) === id), tree = (id, dp) => kids(id).flatMap(o => [[o, dp], ...tree(o.id, dp + 1)]);
+    const listed = tree(null, 1), seen = new Set(listed.map(([o]) => o.id)); for (const o of doc.objects) if (!seen.has(o.id)) listed.push([o, 1]);
+    const objs = listed.map(([o, dp]) => row({ kind: 'object', id: o.id }, ICON[o.type] || '·', o.name || o.id, dp,
       animated.has(o.id) ? '<span class="anim" title="Animated">●</span>' : '', placed[o.id] ? { key: 'obj:' + o.id, on: !E.hidden.has(o.id) } : null)).join('');
     const look = k => ({ key: 'show:' + k, on: !!E.show[k] });
     const chat = doc.layers.find(l => l.type === 'chat2d');
