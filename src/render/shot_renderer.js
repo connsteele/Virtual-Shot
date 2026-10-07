@@ -188,15 +188,16 @@ export class ShotRenderer {
     if (!show.lens) st = { ...st, camera: { ...st.camera, k: 0, ov: 1, fovRender: st.camera.fov } };
     const hazeOn = !!(final && this.haze && show.haze && opts.haze !== false && st.haze && st.haze.gain > 0 && !st.flat.before);
     if (!st.flat.before) {
-      this.render3D(st, show);
+      this.render3D(st, show, opts.upload);
       if (hazeOn) {
         if (n > 1) yield;
         this.prepHaze(st);
         for (let i = 0; i < n; i++) { this.marchSlice(i, n); if (i < n - 1) yield; }
       }
     }
-    if (opts.flat !== false) this.flatTex.needsUpdate = true;
-    if (opts.pops) this.popsTex.needsUpdate = true;
+    const up = opts.upload || {};   // which 2D layers were redrawn since the last frame (default: all)
+    if (opts.flat !== false && up.flat !== false) this.flatTex.needsUpdate = true;
+    if (opts.pops && up.pops !== false) this.popsTex.needsUpdate = true;
     const C = this.comp.U, c = st.camera;
     C.before.value = st.flat.before ? 1 : 0; C.overlay.value = st.flat.overlay; C.gain.value = st.haze ? st.haze.gain : 0;
     C.hazeOn.value = hazeOn ? 1 : 0; C.popsOn.value = final && opts.pops && show.pops ? 1 : 0;
@@ -252,9 +253,9 @@ export class ShotRenderer {
     return s / (480 * 270) / this.haze.U.exposure.value;   // at exposure 1
   }
 
-  render3D(st, show = SHOW) {
+  render3D(st, show = SHOW, upload = {}) {
     const { renderer: r, U, ix, post } = this, g = ix.glass, W_ = g.W, c = st.camera;
-    this.chatTex.needsUpdate = true;
+    if (upload.chat !== false) this.chatTex.needsUpdate = true;   // a 1920x1330 copy: only when the chat was redrawn
     // camera
     const cam = this.camera; cam.fov = c.fovRender; cam.near = c.near; cam.far = c.far; cam.aspect = this.W / this.H;
     cam.position.set(...c.eye); cam.up.set(...c.up); cam.lookAt(v3(c.target)); cam.updateProjectionMatrix(); cam.updateMatrixWorld(true);
@@ -312,14 +313,14 @@ export class ShotRenderer {
 
   /** Render the scene from an editor camera (free view): the engine picture without lens warp, depth of field, haze
    *  or the flat layer, lit as after the reveal so it can be worked on before it. Helpers are drawn on top. */
-  renderFree(st, cam, helpers, show) {
+  renderFree(st, cam, helpers, show, upload) {
     const r = this.renderer;
     const f = new THREE.Vector3(); cam.getWorldDirection(f);
     const eye = cam.position.toArray(), target = cam.position.clone().add(f).toArray(), up = cam.up.toArray();
     const fs = { ...st, cut: false, revealK: Math.max(st.revealK, 1), flat: { before: false, overlay: 0 }, focus: null, haze: null,
       led: { ...st.led, intensity: Math.max(st.led.intensity, 1) }, lighting: { ...st.lighting, ambient: Math.max(st.lighting.ambient, 0.3) },
       camera: { eye, target, up, fov: cam.fov, fovRender: cam.fov, k: 0, ov: 1, squint: 0, near: cam.near, far: cam.far } };
-    this.render(fs, { final: false, flat: false, pops: false, quality: 'render', show });
+    this.render(fs, { final: false, flat: false, pops: false, quality: 'render', show, upload });
     if (helpers) { this.mark('helpers'); const ac = r.autoClear; r.autoClear = false; r.setRenderTarget(null); r.render(helpers, cam); r.autoClear = ac; }
   }
 

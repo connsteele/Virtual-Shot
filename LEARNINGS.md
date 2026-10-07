@@ -502,6 +502,17 @@ First readings (headless Chrome, RTX 4090, frames 700–760):
 - Headless playback numbers (fps, dropped frames) come from the timer-driven loop and don't mean anything; they need
   a visible browser.
 
+**Connor saw about 5 fps panning the free view with the haze off, with CPU time looking like the bottleneck.** Measured
+the same pan in headless Chrome and in the Claude app's browser (a hidden tab): 1–5 ms of JavaScript and 0.4 ms of GPU
+per frame, so the render path doesn't explain it. The one CPU-to-GPU copy per frame was the chat text, which is drawn
+with Canvas 2D and uploaded as a 1920×1330 texture (about 1.2 ms); the 2D layers are now redrawn and uploaded only when
+time or the document changes, so camera moves, toggles and object moves reuse them (identical pixels; a free-view pan
+frame went from 1.8 to 1.15 ms). The stats now also show the time between frames on screen and the browser's long
+tasks (main-thread work of 50 ms or more outside our frames), so a slow pan in a visible window shows where the time
+goes. Open question until Connor's report comes back. For the architecture: every per-frame CPU-to-GPU copy needs a
+reason, and text that animates every frame (the chat) is a candidate for drawing on the GPU (a glyph atlas) instead of
+Canvas 2D.
+
 ## Running the spike
 
 ```

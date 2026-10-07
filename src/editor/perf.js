@@ -16,6 +16,9 @@ export class Perf {
     this.body = this.el.querySelector('.st-body');
     this.el.addEventListener('click', e => { const a = e.target.closest('[data-act]')?.dataset.act; if (a === 'save') this.save(); if (a === 'reset') this.reset(); });
     E.on('show', () => this.sync());
+    // main-thread work outside our frames (event handlers, layout, GC, other scripts): the browser's long tasks (50 ms+)
+    this.long = []; try { new PerformanceObserver(l => { for (const e of l.getEntries()) { this.long.push({ t: e.startTime, ms: e.duration,
+      what: e.attribution?.[0]?.containerType || e.name }); if (this.long.length > 200) this.long.shift(); } }).observe({ type: 'longtask', buffered: false }); } catch { /* not supported */ }
     this.on = false; this.toggle(!!E.statsOn, true);
   }
   toggle(on, quiet) {
@@ -31,6 +34,8 @@ export class Perf {
   end(extra) {
     const c = this.cur; if (!c) return; this.cur = null;
     c.cpu = performance.now() - c.t; c.seq1 = this.E.shot.passSeq || 0; c.gpu = null; c.passes = [];
+    // time since the previous frame on screen: what panning feels like (CPU + GPU + whatever else the browser did)
+    if (c.kind !== 'refine' && c.kind !== 'output') { const dt = this.lastShown != null ? c.t - this.lastShown : null; c.interval = dt != null && dt < 500 ? dt : null; this.lastShown = c.t; }
     if (extra) Object.assign(c, extra);
     this.frames.push(c); if (this.frames.length > KEEP) this.frames.shift();
     this.resolve(); this.drawSoon();
@@ -59,13 +64,14 @@ export class Perf {
   summary() {
     const by = {};
     for (const f of this.frames) {
-      const k = by[f.kind] ||= { frames: 0, cpu: [], gpu: [], passes: {} }; k.frames++; k.cpu.push(f.cpu); if (f.gpu != null) k.gpu.push(f.gpu);
+      const k = by[f.kind] ||= { frames: 0, cpu: [], gpu: [], iv: [], passes: {} }; k.frames++; k.cpu.push(f.cpu); if (f.gpu != null) k.gpu.push(f.gpu); if (f.interval != null) k.iv.push(f.interval);
       for (const p of f.passes) { const n = p.name.replace(/ \d+\/\d+$/, ''); (k.passes[n] ||= []).push(p.ms); }
     }
     const out = {};
     for (const [kind, k] of Object.entries(by)) out[kind] = { frames: k.frames,
       cpu_ms: { mean: r1(k.cpu.reduce((a, b) => a + b, 0) / k.cpu.length), p50: r1(pct(k.cpu, .5)), p95: r1(pct(k.cpu, .95)), max: r1(Math.max(...k.cpu)) },
       gpu_ms: k.gpu.length ? { mean: r1(k.gpu.reduce((a, b) => a + b, 0) / k.gpu.length), p50: r1(pct(k.gpu, .5)), p95: r1(pct(k.gpu, .95)), max: r1(Math.max(...k.gpu)) } : null,
+      interval_ms: k.iv.length ? { p50: r1(pct(k.iv, .5)), p95: r1(pct(k.iv, .95)), max: r1(Math.max(...k.iv)) } : null,
       gpu_pass_mean_ms: Object.fromEntries(Object.entries(k.passes).map(([n, a]) => [n, r1(a.reduce((x, y) => x + y, 0) / a.length)])) };
     return out;
   }
@@ -78,7 +84,8 @@ export class Perf {
       settings: { view: E.view, mode: E.mode, refine: E.refineMode, show: E.show, hidden: [...E.hidden] },
       playback: this.play && { ...this.play, t0: undefined, seconds: r1((performance.now() - this.play.t0) / 1000) },
       summary: this.summary(),
-      frames: this.frames.slice(-200).map(f => ({ kind: f.kind, frame: f.frame, cpu: r1(f.cpu), gpu: r1(f.gpu), passes: Object.fromEntries(f.passes.map(p => [p.name, r1(p.ms)])) })) };
+      long_tasks: this.long.slice(-50).map(l => ({ at_s: r1(l.t / 1000), ms: r1(l.ms), what: l.what })),
+      frames: this.frames.slice(-200).map(f => ({ kind: f.kind, frame: f.frame, at_s: r1(f.t / 1000), interval: r1(f.interval), cpu: r1(f.cpu), gpu: r1(f.gpu), passes: Object.fromEntries(f.passes.map(p => [p.name, r1(p.ms)])) })) };
   }
   async save() {
     const body = JSON.stringify(this.report(), null, 1), name = `perf/editor_perf_${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
@@ -96,10 +103,14 @@ export class Perf {
     const ms = v => v == null ? '–' : v < 10 ? v.toFixed(1) : Math.round(v);
     const passes = lastGpu ? lastGpu.passes : [], total = lastGpu?.gpu || 0;
     const refine = this.frames.filter(f => f.kind === 'refine').slice(-17), refineGpu = refine.reduce((a, f) => a + (f.gpu || 0), 0);
+    const now = performance.now(), recentLong = this.long.filter(l => now - l.t < 2000), longMs = recentLong.reduce((a, l) => a + l.ms, 0);
+    const ivs = this.frames.filter(f => f.interval != null && now - f.t < 2000).map(f => f.interval), iv = pct(ivs, .5);
     const play = this.play ? `<div class="st-row"><span>Playback</span><b>${this.play.dropped} dropped of ${this.play.frames + this.play.dropped}</b></div>` : '';
     this.body.innerHTML = `
       <div class="st-fps"><b>${fps == null ? 'idle' : Math.round(fps)}</b><span>${fps == null ? 'no frames in the last second' : 'fps'}</span></div>
       <div class="st-row"><span>${last ? last.kind[0].toUpperCase() + last.kind.slice(1) : '–'} frame</span><b>CPU ${ms(last?.cpu)} ms · GPU ${ms(lastGpu?.gpu)} ms</b></div>
+      <div class="st-row"><span>Time between frames</span><b>${iv == null ? '–' : ms(iv) + ' ms (median, 2 s)'}</b></div>
+      <div class="st-row"><span>Long tasks (2 s)</span><b>${recentLong.length ? `${recentLong.length} · ${Math.round(longMs)} ms` : 'none'}</b></div>
       ${refine.length ? `<div class="st-row"><span>Last refine</span><b>${refine.length} steps · GPU ${ms(refineGpu)} ms</b></div>` : ''}
       ${play}
       <canvas class="st-graph" width="300" height="60" aria-label="Frame times, last 120 frames"></canvas>

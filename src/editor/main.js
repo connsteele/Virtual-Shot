@@ -48,9 +48,10 @@ async function boot() {
     E.ix = indexDoc(E.doc); shot.syncFromDoc(E.doc);
     if (/undo|redo|deleteKeys/.test(name)) E.selKeys = [];
     if (/Event|undo|redo|setLook/.test(name)) layers();
+    E.layersChanged?.();
     E.emit('change', name); E.requestRender();
   });
-  E.on('eventsMoved', () => layers());   // a dragged message re-lays out the chat live
+  E.on('eventsMoved', () => { layers(); E.layersChanged?.(); });   // a dragged message re-lays out the chat live
   window.VS = { perf: { report: () => E.perf.report(), on: v => E.perf.toggle(v !== false) }, E, cmd: (n, a) => E.cmd.run(n, a), commands: () => E.cmd.list(), evaluate: t => evaluate(E.doc, t, shot.geo, E.ix) };
 
   // ---- viewport visibility (Blender's eye toggles and overlays, Unreal's Show menu): editor-only, kept in this browser
@@ -73,11 +74,17 @@ async function boot() {
   let pending = false, idleTimer = null, refineJob = null;
   E.state = () => evaluate(E.doc, E.frame / E.fps, shot.geo, E.ix);
   const hud = text => { $('hudQuality').textContent = E.view === 'camera' ? text : ''; };
+  // The 2D layers are drawn on the CPU (Canvas 2D) and copied to the GPU; they depend only on time and the document,
+  // so moving a camera, a toggle or an object reuses the last drawing instead of redrawing and re-uploading it.
+  const drawn = { tall: null, flat: null, pops: null, popsAny: false };
+  E.layersChanged = () => { drawn.tall = drawn.flat = drawn.pops = null; };
   const layerOpts = st => {
-    const t = st.t, needFlat = st.flat.before || st.flat.overlay > 0;
-    if (needFlat) chat.render(fctx, t, st.chaos, st.flat.before ? { geom: 'flat' } : { geom: 'flat', chrome: 0 });
-    if (!st.flat.before) chat.render(tctx, t, st.chaos, { geom: 'tall' });
-    return { final: true, flat: needFlat, pops: E.pops.render(pctx, t) };
+    const t = st.t, needFlat = st.flat.before || st.flat.overlay > 0, key = `${t}|${st.chaos}`;
+    const flatKey = key + (st.flat.before ? '|full' : '|overlay'), up = { chat: false, flat: false, pops: false };
+    if (needFlat && drawn.flat !== flatKey) { chat.render(fctx, t, st.chaos, st.flat.before ? { geom: 'flat' } : { geom: 'flat', chrome: 0 }); drawn.flat = flatKey; up.flat = true; }
+    if (!st.flat.before && drawn.tall !== key) { chat.render(tctx, t, st.chaos, { geom: 'tall' }); drawn.tall = key; up.chat = true; }
+    if (drawn.pops !== t) { drawn.popsAny = E.pops.render(pctx, t); drawn.pops = t; up.pops = true; }
+    return { final: true, flat: needFlat, pops: drawn.popsAny, upload: up };
   };
   E.renderNow = (quality = 'play', { output = false } = {}) => {
     refineJob = null; clearTimeout(idleTimer);
@@ -85,8 +92,9 @@ async function boot() {
     perf.begin(output ? 'output' : E.view === 'free' ? 'free' : quality);
     shot.setHidden(output ? new Set() : E.hidden);
     if (E.view === 'free' && !output) {
-      chat.render(tctx, t, st.chaos, { geom: 'tall' });
-      shot.renderFree(st, viewport.freeCam, viewport.helpers(), E.show);
+      const key = `${t}|${st.chaos}`, chatUp = drawn.tall !== key;
+      if (chatUp) { chat.render(tctx, t, st.chaos, { geom: 'tall' }); drawn.tall = key; }
+      shot.renderFree(st, viewport.freeCam, viewport.helpers(), E.show, { chat: chatUp });
     } else {
       E.layerOpts = layerOpts(st);
       shot.render(st, { ...E.layerOpts, quality, show: output ? undefined : E.show });
@@ -103,7 +111,7 @@ async function boot() {
   const gpuIdle = () => Promise.race([shot.backend === 'WebGPU' ? shot.renderer.backend.device.queue.onSubmittedWorkDone() : sleep(25), sleep(40)]);
   const refine = async () => {
     if (E.view !== 'camera' || E.playing || E.interacting || E.refineMode !== 'idle' || !E.st) return;
-    const SLICES = 16, job = refineJob = shot.renderSteps(E.st, { ...E.layerOpts, quality: 'render', slices: SLICES, show: E.show });
+    const SLICES = 16, job = refineJob = shot.renderSteps(E.st, { ...E.layerOpts, upload: { chat: false, flat: false, pops: false }, quality: 'render', slices: SLICES, show: E.show });
     for (let i = 1; ; i++) {
       if (refineJob !== job) return;
       perf.begin('refine'); const r = job.next(); perf.end(); if (r.done) break;
