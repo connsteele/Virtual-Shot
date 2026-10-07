@@ -137,6 +137,8 @@ const doc = {
         coverScale: 0.35, coverDetail: 2, coverRoughness: 0.5, drift: 0.0125, evolve: 0.03 },
       anisotropy: 0.3, screenLight: 100, ringW: 0.06, ledW: 0.006,
       grid: [20, 15], stepLen: 0.015, maxSteps: 320, resolution: 0.5, exposure: 1,
+      // Play quality (playback, scrubbing): 10-12 ms a frame on an RTX 4090 against 140-190 ms for Render quality
+      play: { resolution: 0.2, stepScale: 4, dofStep: 3 }, playGrid: [10, 5],
       level: { start: 264, revealEnd: 300, base: 0.0045, end: 0.0072, buildFrom: 720, last: 1175, maxGain: 0.75, smooth: 30 },
     },
   },

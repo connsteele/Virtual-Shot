@@ -18,10 +18,14 @@ export function lensSample(texNode, q, U) {
     const pw = p.mul(float(1).add(kk.mul(r2)).div(float(1).add(kk.mul(rc2))));
     return vec2(pw.x.div(U.aspect), pw.y).mul(0.5).add(0.5);
   };
-  const flat = texNode.sample(q).level(0).rgb;
+  // U.blur (uv offset, Play quality only): a 4-tap box that smooths the coarse haze's sampling noise
+  const tap = w => { const o = U.blur ? U.blur : float(0);
+    return texNode.sample(w.add(vec2(o, o))).level(0).add(texNode.sample(w.add(vec2(o.negate(), o))).level(0))
+      .add(texNode.sample(w.add(vec2(o, o.negate()))).level(0)).add(texNode.sample(w.sub(vec2(o, o))).level(0)).mul(0.25); };
+  const flat = tap(q).rgb;
   const p0 = q.mul(2).sub(1), edge = clamp(dot(p0, p0).mul(0.5), 0, 1);
-  const g = texNode.sample(warp(q, U.k)).level(0).g;
-  const r = texNode.sample(warp(q, U.k.mul(edge.mul(0.03).add(1)))).level(0).r, b = texNode.sample(warp(q, U.k.mul(float(1).sub(edge.mul(0.03))))).level(0).b;
+  const g = tap(warp(q, U.k)).g;
+  const r = tap(warp(q, U.k.mul(edge.mul(0.03).add(1)))).r, b = tap(warp(q, U.k.mul(float(1).sub(edge.mul(0.03))))).b;
   const p = vec2(p0.x.mul(U.aspect), p0.y), e = dot(p, p).div(U.aspect.mul(U.aspect).add(1));
   const vig = float(1).sub(min(U.k.mul(3), 1).mul(0.5).mul(smoothstep(0.15, 1, e)));
   const warped = vec3(r, g, b).mul(vig);
@@ -32,7 +36,7 @@ export function lensSample(texNode, q, U) {
 
 export function makeComposite({ engineTex, flatTex, popsTex, hazeTex }) {
   const U = { overlay: uniform(0), before: uniform(1), gain: uniform(0), hazeOn: uniform(1), popsOn: uniform(1),
-    k: uniform(0), sq: uniform(0), aspect: uniform(16 / 9) };
+    k: uniform(0), sq: uniform(0), aspect: uniform(16 / 9), blur: uniform(0) };
   const eng = texture(engineTex), flat = texture(flatTex), pops = texture(popsTex), haze = texture(hazeTex);
   const node = Fn(() => {
     const q = uv();

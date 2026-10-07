@@ -35,13 +35,13 @@ async function boot() {
   // on the GPU the way Black Page's Blender compositor did it.
   const LOOK = params.get('look') || 'final';
   /** Render frame f: evaluate, draw the 2D layers, render 3D + haze, composite to the canvas. Returns the state. */
-  function renderFrame(f) {
+  function renderFrame(f, quality = 'render') {
     const t = f / fps, st = state = evaluate(doc, t, shot.geo, ix);
     const needFlat = st.flat.before || st.flat.overlay > 0;
     if (needFlat) chat.render(fctx, t, chaosOf(st), st.flat.before ? { geom: 'flat' } : { geom: 'flat', chrome: 0 });
     if (!st.flat.before) chat.render(tctx, t, chaosOf(st), { geom: 'tall' });
     const anyPops = LOOK === 'final' && pops.render(pctx, t);
-    shot.render(st, { final: LOOK === 'final', flat: needFlat, pops: anyPops });
+    shot.render(st, { final: LOOK === 'final', flat: needFlat, pops: anyPops, quality });
     $('time').textContent = `f ${f} · ${t.toFixed(3)} s`; $('scrub').value = f;
     const ref = $('ref'); if (ref && !ref.hidden) ref.src = LOOK === 'final' ? `/bp-final-ref/f${String(f).padStart(5, '0')}.png` : `/bp/blender/export/final_engine/f${String(f).padStart(5, '0')}.png`;
     return st;
@@ -57,11 +57,11 @@ async function boot() {
     }
   };
   let exporting = false;
-  async function exportFrames(frames, dir) {
+  async function exportFrames(frames, dir, { quality = 'render' } = {}) {
     if (exporting) throw new Error('an export is already running'); exporting = true;
     const t0 = performance.now(); let n = 0;
     const inflight = new Set();   // up to 4 uploads in flight
-    try { for (const f of frames) { renderFrame(f); const name = `${dir}/f${String(f).padStart(5, '0')}.png`;
+    try { for (const f of frames) { renderFrame(f, quality); const name = `${dir}/f${String(f).padStart(5, '0')}.png`;
       const body = await (await fetch(composite().toDataURL('image/png'))).blob();
       const p = post(name, body).finally(() => inflight.delete(p)); inflight.add(p);
       if (inflight.size >= 4) await Promise.race(inflight); n++;
@@ -81,9 +81,11 @@ async function boot() {
 
   // transport
   let playing = false, f0 = 0, tStart = 0, cur = 0;
-  const loop = now => { if (!playing) return; cur = Math.min(last, f0 + Math.floor((now - tStart) / 1000 * fps)); renderFrame(cur); if (cur >= last) { playing = false; $('play').textContent = 'Play'; return; } requestAnimationFrame(loop); };
-  $('play').onclick = () => { if (playing) { playing = false; $('play').textContent = 'Play'; return; } if (cur >= last) cur = 0; playing = true; f0 = cur; tStart = performance.now(); $('play').textContent = 'Pause'; requestAnimationFrame(loop); };
-  $('scrub').oninput = () => { if (exporting) return; cur = +$('scrub').value; renderFrame(cur); };
+  // playback and scrubbing draw Play quality; a still frame is redrawn at Render quality
+  const loop = now => { if (!playing) return; cur = Math.min(last, f0 + Math.floor((now - tStart) / 1000 * fps)); renderFrame(cur, 'play'); if (cur >= last) { playing = false; $('play').textContent = 'Play'; renderFrame(cur); return; } requestAnimationFrame(loop); };
+  $('play').onclick = () => { if (playing) { playing = false; $('play').textContent = 'Play'; renderFrame(cur); return; } if (cur >= last) cur = 0; playing = true; f0 = cur; tStart = performance.now(); $('play').textContent = 'Pause'; requestAnimationFrame(loop); };
+  $('scrub').oninput = () => { if (exporting) return; cur = +$('scrub').value; renderFrame(cur, 'play'); };
+  $('scrub').onchange = () => { if (exporting) return; cur = +$('scrub').value; renderFrame(cur); };
   if ($('showRef')) $('showRef').onchange = e => { $('ref').hidden = !e.target.checked; renderFrame(cur); };
 
   window.VS = { doc, shot, chat, pops, evaluate: t => evaluate(doc, t, shot.geo, ix), renderFrame, composite, exportFrames, measureHaze,

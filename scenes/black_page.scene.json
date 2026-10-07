@@ -1358,6 +1358,15 @@
    "maxSteps": 320,
    "resolution": 0.5,
    "exposure": 1.0546645699969346,
+   "play": {
+    "resolution": 0.2,
+    "stepScale": 4,
+    "dofStep": 3
+   },
+   "playGrid": [
+    10,
+    5
+   ],
    "level": {
     "start": 264,
     "revealEnd": 300,

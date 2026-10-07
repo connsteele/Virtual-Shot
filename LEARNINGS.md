@@ -123,10 +123,12 @@ and the plumbing around rendering (export, hidden tabs, artifacts), which is whe
     policy and the folder picker inside the artifact frame ([spike viewer](https://claude.ai/artifact/NXA3hjwnqtV1VzuqrGmsV9),
     private). I could not open it from this machine's browser pane (not signed in), so those three answers are still
     open.
-17. **Play mode at Render quality is borderline.** On the RTX 4090 a full-quality frame costs 13–24 ms of GPU time,
-    and almost all of it is the DOF gather: without DOF the frame takes 0.1–0.3 ms (see [Performance](#performance)).
-    60 fps playback needs a cheaper DOF in Play mode. The doc's promise should be "framing and timing hold between
-    Play and Render", with quality presets named per mode.
+17. **Play mode can't use Render quality.** On the RTX 4090 the engine picture alone costs 13–24 ms of GPU time a
+    frame, almost all of it the DOF gather. With the final look's haze it costs 140–190 ms, about 8 fps, which is why
+    the artifact's playback stuttered. A Play quality preset (haze at a fifth of the scene buffer with 4× longer steps
+    and a 10×5 light grid, a sparser DOF gather, a small blur on the haze) costs 10–12 ms and plays at the display's
+    60 fps; a still frame is redrawn at Render quality. The doc's promise should be "framing and timing hold between
+    Play and Render", with quality presets named per mode (see [Performance](#performance)).
 
 ## 2. What took longest; what three.js gave for free or fought against
 
@@ -204,8 +206,9 @@ Quoted text is the doc's current wording; each item says what to replace it with
    render + overlays, blend modes and opacity tracks". Add "Look modules (custom materials, post passes)" beside the
    renderer.
 6. **Core architecture → "Only the quality settings differ, which is why a previz framing holds in the final render."**
-   → "Framing and timing are identical in every mode. Play mode uses a cheaper quality preset (DOF, buffer scale),
-   because the Black Page shot's DOF alone costs 13–24 ms of GPU time a frame on an RTX 4090."
+   → "Framing and timing are identical in every mode. Play mode uses a cheaper quality preset (haze sampling, DOF
+   taps, buffer scale): the Black Page shot's final look costs 140–190 ms a frame at Render quality and 10–12 ms at
+   Play quality on an RTX 4090."
 7. **Render mode → Passes:** replace "beauty, depth, normals and an object ID mask" with "beauty, distance from the
    camera (Euclidean, multisampled like colour; additive effects don't write it), normals and an object ID mask".
    Add a bullet: "Internal resolution follows the lens: the buffer grows with barrel-distortion overscan (1×–2×)."
@@ -259,6 +262,13 @@ RTX 4090, Chrome 152 in the Claude desktop browser pane, 1920×1080, background 
 | **Export, all 1176 frames, same machine and pane (render + PNG + write)** | **old engine 61 s; spike on WebGPU 50 s** (canvas path) |
 | Export, spike, GPU readback + `CompressionStream` path | 186 s (WebGPU), 322 s (WebGL2) |
 | Engine time per frame as seen from the page | 60–130 ms, inflated by background-tab scheduling; GPU time above is the real cost |
+| **Final look (haze + pops), GPU time per frame**, headless Chrome | Render quality 38 ms (reveal) to 188 ms; Play quality 10–12 ms |
+| Final look playback, 10–14 s, headless Chrome (no vsync) | Render quality 7.7 fps; Play quality 105 fps |
+
+GPU clocks matter: in the browser pane's background tab the 4090 stayed at 540 MHz (P3) and the same frames measured
+about twice as slow. Benchmarks and long renders now run in a separate headless Chrome (`tools/headless.mjs`, Chrome's
+DevTools protocol over Node's built-in WebSocket, optional below-normal priority), which also keeps the load out of
+the Claude app. Its frames match the pane's exactly in the comparisons.
 
 The GPU numbers come from two different timer methods, so compare them loosely. The pattern is clear, though: the
 depth of field is nearly all the cost in every version, and the WebGPU backend runs this DOF pass 1.3–2× slower than
@@ -363,6 +373,7 @@ node tools/compare.mjs <run> [frames]       # side-by-side + difference images (
 node tools/metrics_all.mjs <run>            # per-frame metrics for a whole run
 node tools/build_artifact.mjs      # dist/artifact (gitignored: holds copies of the models)
 node tools/bake_haze_levels.mjs    # after VS.measureHaze(frames): calibrate and bake haze levels into data/haze_levels.json
+node tools/headless.mjs "/src/index.html?f=300" "await VS.exportFrames([...], 'run')" --low   # run it in a separate headless Chrome
 ```
 
 The final master is decoded to `ref_final\` with ffmpeg (BT.709, limited range); `REF=<dir>` points the comparison

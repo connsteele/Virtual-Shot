@@ -28,6 +28,9 @@ export function makeHaze({ distTex, emitTex, look }) {
   const D = H.density;   // { density, scale, detail, roughness, distortion, wisp, cover:[c0,c1], coverScale, drift, evolve }
   const emitNode = texture(emitTex);
 
+  // Each march material gets its own Fn instances: a Fn with a layout that reads uniforms can't be shared between
+  // materials (see LEARNINGS, section 6).
+  const buildMarch = (GX, GY) => {
   /** haze density at a glTF-space point (Blender's Position is (x, -z, y)). */
   const density = Fn(([pg]) => {
     const vb = vec3(pg.x, pg.z.negate(), pg.y).sub(vec3(0, 0, U.t.mul(D.drift)));
@@ -96,7 +99,12 @@ export function makeHaze({ distTex, emitTex, look }) {
     If(snapped.lessThan(0.5), () => { Lnear.assign(L); });
     return vec4(mix(L, Lnear, cov).mul(U.exposure), 1);
   })());
-  return { U, march: new THREE.QuadMesh(march) };
+  return new THREE.QuadMesh(march);
+  };
+  // Render quality uses the full light grid; Play quality a coarser one (H.playGrid), sampled from the same emission
+  // texture with linear filtering.
+  const [PX, PY] = H.playGrid ?? [10, 5];
+  return { U, march: buildMarch(GX, GY), marchPlay: buildMarch(PX, PY) };
 }
 
 /** The CRT's emission for lighting: the screen image (display values) decoded to linear and scaled, on a small grid. */

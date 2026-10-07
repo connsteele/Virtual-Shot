@@ -151,7 +151,7 @@ export class ShotRenderer {
     if (HZ) {
       const [gx, gy] = HZ.grid;
       this.emitHiRT = rt(gx * 32, gy * 32);
-      this.emitRT = rt(gx, gy, { type: THREE.HalfFloatType, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter });
+      this.emitRT = rt(gx, gy, { type: THREE.HalfFloatType });   // linear: the Play grid samples between cells
       const ub = this.screenUB, crtColor = this.crt.userData.color;
       this.emitFlat = flatScreenQuad(Fn(() => crtColor(vec2(ub[0], ub[1]).add(uv().mul(vec2(ub[2] - ub[0], ub[3] - ub[1])))))());
       this.emitAvg = makeEmitAverage({ hiTex: this.emitHiRT.texture, gx, gy });
@@ -166,9 +166,12 @@ export class ShotRenderer {
 
   /** Render one evaluated frame to the canvas: the 3D shot (into finalRT), the haze, then the composite with the 2D
    *  layers. opts: { flat: the flat chat canvas changed, pops: the pops canvas has content, haze: render the haze,
-   *  final: composite the haze and pops (false = the engine picture alone) }. */
+   *  final: composite the haze and pops (false = the engine picture alone), quality: 'render' | 'play' }.
+   *  Play quality trades sampling for speed (haze at a quarter of the scene buffer, 3x longer steps and a 10x5 light
+   *  grid; a sparser depth-of-field gather); framing, timing and the look's settings are the same. */
   render(st, opts = {}) {
     const r = this.renderer, c = st.camera, final = opts.final !== false;
+    this.quality = opts.quality || 'render';
     if (st.cut) { r.setRenderTarget(this.finalRT); r.clear(); r.setRenderTarget(null); r.clear(); return; }
     const hazeOn = !!(final && this.haze && opts.haze !== false && st.haze && st.haze.gain > 0 && !st.flat.before);
     if (!st.flat.before) {
@@ -181,6 +184,7 @@ export class ShotRenderer {
     C.before.value = st.flat.before ? 1 : 0; C.overlay.value = st.flat.overlay; C.gain.value = st.haze ? st.haze.gain : 0;
     C.hazeOn.value = hazeOn ? 1 : 0; C.popsOn.value = final && opts.pops ? 1 : 0;
     C.k.value = c.k; C.sq.value = c.squint; C.aspect.value = this.W / this.H;
+    C.blur.value = this.quality === 'play' ? 1.0 / this.hazeRT.width : 0;
     r.setRenderTarget(null); this.comp.quad.render(r);
   }
 
@@ -199,9 +203,11 @@ export class ShotRenderer {
     H.ringPos.value.set(...(R ? R.pos : [0, -10, 0])); H.ringI.value.set(...(R ? R.col.map(v => lin(v) * ringW * I4 * (HZ.ringGain ?? 1)) : [0, 0, 0]));
     const ledW = (HZ.ledW ?? 0.006) * (led.intensity > 0 ? 1 : 0);
     H.ledPos.value.set(...add(led.pos, scl(led.n, this.ix.glass.W * 0.012))); H.ledI.value.set(...led.color.map(v => lin(v) * ledW * I4));
-    const hw = Math.round(this.sceneRT.width * (HZ.resolution ?? 0.5)), hh = Math.round(this.sceneRT.height * (HZ.resolution ?? 0.5));
+    const play = this.quality === 'play', PQ = HZ.play || {}, res = play ? (PQ.resolution ?? 0.25) : (HZ.resolution ?? 0.5);
+    H.stepLen.value = (HZ.stepLen ?? 0.015) * (play ? (PQ.stepScale ?? 3) : 1);
+    const hw = Math.round(this.sceneRT.width * res), hh = Math.round(this.sceneRT.height * res);
     if (this.hazeRT.width !== hw || this.hazeRT.height !== hh) this.hazeRT.setSize(hw, hh);
-    r.setRenderTarget(this.hazeRT); this.haze.march.render(r);
+    r.setRenderTarget(this.hazeRT); (play ? this.haze.marchPlay : this.haze.march).render(r);
   }
 
   /** Mean luminance of this frame's lens-warped, ungained haze (call after render()). */
@@ -256,7 +262,7 @@ export class ShotRenderer {
     P.sp.value.set(D ? F.sp[0] : .5, D ? 1 - F.sp[1] : .5); P.spot.value = D ? F.spot : 0; P.spr.value = D ? F.spotR : 1; P.spf.value = D ? F.spotF : 1;
     r.setRenderTarget(this.lensRT); post.quads.lens.render(r);
     r.setRenderTarget(this.cocRT); post.quads.coc.render(r);
-    const sc = this.H / 1080; P.px.value.set(1 / this.W, 1 / this.H); P.sc.value = sc; P.maxR.value = D ? F.max * sc : 0; P.rs.value = 0.5 * sc;
+    const sc = this.H / 1080; P.px.value.set(1 / this.W, 1 / this.H); P.sc.value = sc; P.maxR.value = D ? F.max * sc : 0; P.rs.value = (this.quality === 'play' ? (this.doc.look.haze?.play?.dofStep ?? 2) : 0.5) * sc;
     r.setRenderTarget(this.finalRT); post.quads.dof.render(r);
   }
 
