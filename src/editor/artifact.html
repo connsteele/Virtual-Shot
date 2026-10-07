@@ -30,6 +30,7 @@
       <button type="button" id="showBtn" popovertarget="showMenu" aria-haspopup="true" aria-expanded="false" title="Turn parts of the look and the overlays on or off">Show ▾</button>
       <label class="vp-q">Quality <select id="refineSel" aria-label="Viewport quality">
         <option value="idle">Refine when idle</option><option value="off">Play quality only</option></select></label>
+      <button type="button" id="statsBtn" aria-pressed="false" title="Frames per second and render timings (CPU and GPU per pass)">Stats</button>
       <span class="spacer"></span><span id="hiddenNote" class="muted"></span>
     </div>
     <div class="vp-area">
@@ -37,6 +38,7 @@
         <canvas id="gpu" width="1920" height="1080"></canvas>
         <svg id="overlay" viewBox="0 0 1920 1080" preserveAspectRatio="none" aria-hidden="true"></svg>
         <div class="vp-hud"><span id="hudView">Shot camera</span><span id="hudQuality"></span></div>
+        <div id="stats" class="stats" hidden aria-label="Performance stats"></div>
       </div>
     </div>
     <div id="showMenu" class="menu" popover aria-label="Show"></div>

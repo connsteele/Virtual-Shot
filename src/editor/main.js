@@ -9,6 +9,7 @@ import { Outliner } from './outliner.js';
 import { Inspector } from './inspector.js';
 import { Viewport } from './viewport.js';
 import { Timeline } from './timeline.js';
+import { Perf } from './perf.js';
 
 const $ = id => document.getElementById(id);
 const params = new URLSearchParams(location.search);
@@ -50,15 +51,16 @@ async function boot() {
     E.emit('change', name); E.requestRender();
   });
   E.on('eventsMoved', () => layers());   // a dragged message re-lays out the chat live
-  window.VS = { E, cmd: (n, a) => E.cmd.run(n, a), commands: () => E.cmd.list(), evaluate: t => evaluate(E.doc, t, shot.geo, E.ix) };
+  window.VS = { perf: { report: () => E.perf.report(), on: v => E.perf.toggle(v !== false) }, E, cmd: (n, a) => E.cmd.run(n, a), commands: () => E.cmd.list(), evaluate: t => evaluate(E.doc, t, shot.geo, E.ix) };
 
   // ---- viewport visibility (Blender's eye toggles and overlays, Unreal's Show menu): editor-only, kept in this browser
   E.show = { ...SHOW, safe: true, grid: true, frustum: true, hazeBox: true, lights: true, bounds: true };
   E.hidden = new Set(); E.refineMode = 'idle';
   const viewKey = 'vs-editor-view:' + doc.name;
   try { const v = JSON.parse(localStorage.getItem(viewKey) || 'null');
-    if (v) { Object.assign(E.show, v.show); E.hidden = new Set(v.hidden || []); E.refineMode = v.refine || 'idle'; } } catch { /* storage may be blocked */ }
-  const keepView = () => { try { localStorage.setItem(viewKey, JSON.stringify({ show: E.show, hidden: [...E.hidden], refine: E.refineMode })); } catch { /* storage may be blocked */ } };
+    if (v) { Object.assign(E.show, v.show); E.hidden = new Set(v.hidden || []); E.refineMode = v.refine || 'idle'; E.statsOn = !!v.stats; } } catch { /* storage may be blocked */ }
+  const keepView = () => { try { localStorage.setItem(viewKey, JSON.stringify({ show: E.show, hidden: [...E.hidden], refine: E.refineMode, stats: !!E.statsOn })); } catch { /* storage may be blocked */ } };
+  E.keepView = keepView;
   E.setShow = (k, on) => { E.show[k] = on; keepView(); E.emit('show'); E.requestRender(); };
   E.setHidden = (id, hide) => { hide ? E.hidden.add(id) : E.hidden.delete(id); keepView(); E.emit('show'); E.requestRender(); };
   E.revealAll = () => { E.hidden.clear(); keepView(); E.emit('show'); E.requestRender(); };
@@ -67,7 +69,7 @@ async function boot() {
   // ---- rendering: every change draws at Play quality straight away (~15 ms); once things stop, the camera view
   // refines to Render quality in 16 slices (15–25 ms each), and any new change drops the refine. Renders to disk use the
   // full look whatever the viewport shows.
-  const viewport = new Viewport(E);
+  const viewport = new Viewport(E), perf = E.perf = new Perf(E);
   let pending = false, idleTimer = null, refineJob = null;
   E.state = () => evaluate(E.doc, E.frame / E.fps, shot.geo, E.ix);
   const hud = text => { $('hudQuality').textContent = E.view === 'camera' ? text : ''; };
@@ -80,6 +82,7 @@ async function boot() {
   E.renderNow = (quality = 'play', { output = false } = {}) => {
     refineJob = null; clearTimeout(idleTimer);
     const st = E.st = E.state(), t = st.t;
+    perf.begin(output ? 'output' : E.view === 'free' ? 'free' : quality);
     shot.setHidden(output ? new Set() : E.hidden);
     if (E.view === 'free' && !output) {
       chat.render(tctx, t, st.chaos, { geom: 'tall' });
@@ -88,7 +91,7 @@ async function boot() {
       E.layerOpts = layerOpts(st);
       shot.render(st, { ...E.layerOpts, quality, show: output ? undefined : E.show });
     }
-    E.quality = quality; viewport.overlay(st);
+    perf.end(); E.quality = quality; viewport.overlay(st);
     $('timecode').textContent = E.timecode(E.frame); $('frameNo').textContent = `f ${E.frame} · ${t.toFixed(3)} s`;
     hud(quality === 'play' ? 'Play quality' : 'Render quality');
     E.emit('frame', st);
@@ -103,7 +106,7 @@ async function boot() {
     const SLICES = 16, job = refineJob = shot.renderSteps(E.st, { ...E.layerOpts, quality: 'render', slices: SLICES, show: E.show });
     for (let i = 1; ; i++) {
       if (refineJob !== job) return;
-      if (job.next().done) break;
+      perf.begin('refine'); const r = job.next(); perf.end(); if (r.done) break;
       hud(`Refining ${Math.round(i / (SLICES + 1) * 100)}%`);
       await Promise.all([gpuIdle(), new Promise(r => requestAnimationFrame(r))]);
     }
@@ -126,7 +129,7 @@ async function boot() {
   let t0 = 0, f0 = 0;
   const loop = now => { if (!E.playing) return; const f = f0 + Math.floor((now - t0) / 1000 * E.fps);
     if (f > E.last) { E.playing = false; $('playBtn').textContent = 'Play'; E.frame = E.last; E.requestRender(); return; }
-    E.frame = f; E.renderNow('play'); requestAnimationFrame(loop); };
+    perf.playTick(f, E.frame); E.frame = f; E.renderNow('play'); requestAnimationFrame(loop); };
   E.togglePlay = () => { if (E.playing) { E.playing = false; $('playBtn').textContent = 'Play'; E.requestRender(); return; }
     if (E.frame >= E.last) E.frame = 0; E.playing = true; t0 = performance.now(); f0 = E.frame; $('playBtn').textContent = 'Pause'; requestAnimationFrame(loop); };
   const keyTimes = () => [...new Set(E.doc.tracks.flatMap(tr => tr.keys.map(k => Math.round(k.t * E.fps))))].sort((a, b) => a - b);

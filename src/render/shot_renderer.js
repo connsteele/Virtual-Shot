@@ -202,7 +202,7 @@ export class ShotRenderer {
     C.hazeOn.value = hazeOn ? 1 : 0; C.popsOn.value = final && opts.pops && show.pops ? 1 : 0;
     C.k.value = c.k; C.sq.value = c.squint; C.aspect.value = this.W / this.H;
     C.blur.value = this.quality === 'play' ? 1.0 / this.hazeRT.width : 0;
-    r.setRenderTarget(null); this.comp.quad.render(r);
+    this.mark('composite'); r.setRenderTarget(null); this.comp.quad.render(r);
   }
 
   /** The haze for this frame: the screen's light grid, then the ray march into hazeRT (a fraction of the scene buffer). */
@@ -212,6 +212,7 @@ export class ShotRenderer {
   marchSlice(i, n) {
     const r = this.renderer, rt = this.hazeRT, march = this.quality === 'play' ? this.haze.marchPlay : this.haze.march;
     r.setRenderTarget(rt);
+    this.mark(n === 1 ? 'haze march' : `haze march ${i + 1}/${n}`);
     if (n === 1) { march.render(r); return; }
     const y0 = Math.floor(rt.height * i / n), y1 = Math.floor(rt.height * (i + 1) / n), ac = r.autoClear;
     rt.scissor.set(0, y0, rt.width, y1 - y0); r.autoClear = false; r.setScissorTest(true);
@@ -223,8 +224,8 @@ export class ShotRenderer {
   prepHaze(st) {
     const r = this.renderer, H = this.haze.U, c = st.camera, gm = this.glassMap, R = st.ring, led = st.led, HZ = this.doc.look.haze;
     this.emitAvg.U.screenLight.value = HZ.screenLight ?? 100;
-    r.setRenderTarget(this.emitHiRT); this.emitFlat.render(r);
-    r.setRenderTarget(this.emitRT); this.emitAvg.quad.render(r);
+    this.mark('haze light grid'); r.setRenderTarget(this.emitHiRT); this.emitFlat.render(r);
+    this.mark('haze light grid avg'); r.setRenderTarget(this.emitRT); this.emitAvg.quad.render(r);
     const f = nrm(c.target.map((v, i) => v - c.eye[i])), rr = nrm([f[1] * c.up[2] - f[2] * c.up[1], f[2] * c.up[0] - f[0] * c.up[2], f[0] * c.up[1] - f[1] * c.up[0]]);
     const uu = [rr[1] * f[2] - rr[2] * f[1], rr[2] * f[0] - rr[0] * f[2], rr[0] * f[1] - rr[1] * f[0]];
     H.eye.value.set(...c.eye); H.cf.value.set(...f); H.cr.value.set(...rr); H.cu.value.set(...uu);
@@ -286,16 +287,16 @@ export class ShotRenderer {
     // scene pass: the buffer grows with the lens overscan so the centre stays sharp
     const scale = c.k > 1e-4 ? Math.min(2, Math.ceil(c.ov * 2) / 2) : 1, sw = Math.round(this.W * scale), sh = Math.round(this.H * scale);
     if (this.sceneRT.width !== sw || this.sceneRT.height !== sh) this.sceneRT.setSize(sw, sh);
-    r.setMRT(this.sceneMRT); r.setRenderTarget(this.sceneRT); r.clear(); r.render(this.scene, cam); r.setMRT(null);
+    this.mark('scene'); r.setMRT(this.sceneMRT); r.setRenderTarget(this.sceneRT); r.clear(); r.render(this.scene, cam); r.setMRT(null);
     // lens + circle of confusion
     const P = post.U, F = st.focus, D = !!(show.dof && F && (F.px > 0 || F.edge > 0 || F.spot > 0));
     P.k.value = c.k; P.aspect.value = this.W / this.H; P.sq.value = c.squint;
     P.fD.value = D ? F.D : 0; P.ppd.value = D ? F.px : 0; P.band.value = D ? F.band : 0; P.maxc.value = D ? F.max : 0; P.edge.value = D ? F.edge : 0; P.es.value = D ? F.es : 1;
     P.sp.value.set(D ? F.sp[0] : .5, D ? 1 - F.sp[1] : .5); P.spot.value = D ? F.spot : 0; P.spr.value = D ? F.spotR : 1; P.spf.value = D ? F.spotF : 1;
-    r.setRenderTarget(this.lensRT); post.quads.lens.render(r);
-    r.setRenderTarget(this.cocRT); post.quads.coc.render(r);
+    this.mark('lens'); r.setRenderTarget(this.lensRT); post.quads.lens.render(r);
+    this.mark('focus (CoC)'); r.setRenderTarget(this.cocRT); post.quads.coc.render(r);
     const sc = this.H / 1080; P.px.value.set(1 / this.W, 1 / this.H); P.sc.value = sc; P.maxR.value = D ? F.max * sc : 0; P.rs.value = (this.quality === 'play' ? (this.doc.look.haze?.play?.dofStep ?? 2) : 0.5) * sc;
-    r.setRenderTarget(this.finalRT); post.quads.dof.render(r);
+    this.mark('depth of field'); r.setRenderTarget(this.finalRT); post.quads.dof.render(r);
   }
 
   /** After the document changed (editor commands, undo): re-index it and move placed objects to their transforms. */
@@ -319,13 +320,29 @@ export class ShotRenderer {
       led: { ...st.led, intensity: Math.max(st.led.intensity, 1) }, lighting: { ...st.lighting, ambient: Math.max(st.lighting.ambient, 0.3) },
       camera: { eye, target, up, fov: cam.fov, fovRender: cam.fov, k: 0, ov: 1, squint: 0, near: cam.near, far: cam.far } };
     this.render(fs, { final: false, flat: false, pops: false, quality: 'render', show });
-    if (helpers) { const ac = r.autoClear; r.autoClear = false; r.setRenderTarget(null); r.render(helpers, cam); r.autoClear = ac; }
+    if (helpers) { this.mark('helpers'); const ac = r.autoClear; r.autoClear = false; r.setRenderTarget(null); r.render(helpers, cam); r.autoClear = ac; }
   }
 
   /** The placed model whose bounds hold the power LED (null if none). */
   ledHost() {
     const p = v3(this.ix.obj.led.position), b = new THREE.Box3();
     return Object.values(this.placed).find(n => b.setFromObject(n).expandByScalar(0.005).containsPoint(p)) || null;
+  }
+
+  /** GPU timing per pass (WebGPU timestamp queries, when the adapter has them). mark() names the next pass: each
+   *  gets its own number in three's query ids (renderer.info.frame, unused otherwise without an animation loop). */
+  get canTime() { return !!(this.renderer.backend.isWebGPUBackend && this.renderer.backend.hasFeature?.('timestamp-query')); }
+  setTiming(on) { this.timing = on && this.canTime; this.renderer.backend.trackTimestamp = this.timing; this.passNames ||= new Map(); this.passSeq ||= 0; }
+  mark(name) { if (!this.timing) return; this.renderer.info.frame = ++this.passSeq; this.passNames.set(this.passSeq, name); }
+  /** Resolve finished queries: [{ seq, name, ms }] for passes not reported before. */
+  async gpuTimes() {
+    if (!this.timing) return [];
+    const r = this.renderer; await r.resolveTimestampsAsync('render');
+    const pool = r.backend.timestampQueryPool?.render; if (!pool) return [];
+    const out = [];
+    for (const [uid, ms] of pool.timestamps) { const seq = +(uid.match(/:f(\d+)$/) || [])[1]; const name = this.passNames.get(seq);
+      if (name === undefined) continue; this.passNames.delete(seq); out.push({ seq, name, ms }); }
+    return out;
   }
 
   /** Hide placed objects in the viewport (ids), show the rest. */

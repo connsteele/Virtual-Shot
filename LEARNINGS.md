@@ -468,6 +468,40 @@ What changed:
 - Headless Chrome doesn't run `requestAnimationFrame` here unless frames are forced, so editor tests that need the
   frame loop run with `?bg` (timers instead of animation frames).
 
+### 7.2 Performance stats
+
+A Stats button in the viewport header opens an overlay (Unreal's `stat fps` and `stat unit`): frames per second
+that reached the screen, CPU time to build and submit the last frame, its GPU time, GPU time per render pass as bars,
+the last refine's GPU total, dropped frames during playback, and a graph of the last 120 frames against the 60 fps
+line. "Save report" writes a JSON report to the spike folder (`perf/editor_perf_<time>.json`: GPU and browser, buffer
+sizes, viewport settings, per-kind percentiles, per-pass means and the last 200 frames); the artifact copies it
+instead, and `VS.perf.report()` returns it to scripts, so Connor and Claude read the same numbers.
+
+GPU times come from WebGPU timestamp queries, which three.js records per render call when `trackTimestamp` is on.
+three keys them by `renderer.info.frame`, which only advances with its own animation loop, so `ShotRenderer.mark(name)`
+sets that number before each pass and keeps a name for it; after resolving, each duration maps back to a named pass.
+That's a workaround: the doc's renderer should name its passes and expose timings itself.
+
+First readings (headless Chrome, RTX 4090, frames 700–760):
+
+| GPU ms | Play quality | Render quality |
+|---|---|---|
+| Haze march | 3.6–8 | ~160 one-shot; 12–50 per band |
+| Depth of field | 1.3–2.8 | ~31 |
+| Scene (4× MSAA, 2880×1620) | 0.1–0.2 | 0.2 |
+| Lens, focus, light grid, composite | under 0.1 each | under 0.1 each |
+| Whole frame (mean) | 11 | |
+
+- **Depth of field is the second cost** at Render quality (its gather steps every half pixel; Play steps every 2–3).
+  It's worth a cheaper Render quality path (a separable or mip-based blur) before the doc commits to this gather.
+- **The scene itself is nearly free.** The PSX models cost nothing; the look's passes are the whole bill. The
+  architecture's budget should be stated per pass, not per scene.
+- **Slicing costs total GPU time.** A full refine measured 189 ms in one run and 503 ms in another for the same frame:
+  the GPU idles between bands and its clocks drop. Fewer, larger bands while nothing else is happening, or a
+  compute pass the GPU can schedule itself, would recover some of that.
+- Headless playback numbers (fps, dropped frames) come from the timer-driven loop and don't mean anything; they need
+  a visible browser.
+
 ## Running the spike
 
 ```

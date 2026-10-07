@@ -48,6 +48,21 @@ input[type=number] { font-variant-numeric: tabular-nums; }
 .vp-stage svg { pointer-events: none; }
 .vp-hud { position: absolute; left: 8px; top: 6px; display: flex; gap: 10px; font-size: 12px; color: var(--muted); pointer-events: none; text-shadow: 0 1px 2px #000; }
 
+/* Stats overlay (Unreal's stat fps / stat unit) */
+.stats { position: absolute; right: 8px; top: 8px; width: 300px; max-height: calc(100% - 16px); overflow: auto; padding: 8px 10px; display: grid; gap: 6px;
+  background: rgba(22, 21, 22, .88); border: 1px solid var(--line-strong); border-radius: 4px; font-size: 12px; font-variant-numeric: tabular-nums; }
+.st-body { display: grid; gap: 5px; }
+.st-fps { display: flex; align-items: baseline; gap: 6px; } .st-fps b { font-size: 26px; line-height: 1; } .st-fps span { color: var(--muted); }
+.st-row { display: flex; justify-content: space-between; gap: 8px; } .st-row span { color: var(--muted); } .st-row b { font-weight: 500; }
+.stats .st-graph { position: static; inset: auto; width: 100%; height: 60px; background: var(--ink); border-radius: 2px; display: block; }
+.st-legend { display: flex; gap: 6px; align-items: center; color: var(--muted); font-size: 11px; } .st-legend span { margin-left: auto; color: var(--faint); }
+.st-legend i { width: 8px; height: 8px; display: inline-block; } .st-legend i.c { background: var(--accent); } .st-legend i.g { background: var(--teal); }
+.st-passes { display: grid; gap: 2px; }
+.st-pass { display: grid; grid-template-columns: 112px minmax(0, 1fr) 34px; gap: 6px; align-items: center; }
+.st-pass span { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } .st-pass b { text-align: right; font-weight: 500; }
+.st-pass .bar { height: 6px; background: var(--ink); border-radius: 3px; overflow: hidden; } .st-pass .bar > div { height: 100%; background: var(--teal); }
+.st-act { display: flex; gap: 6px; } .st-act button { padding: 2px 8px; font-size: 12px; }
+
 /* Show menu (popover, positioned under its button) */
 .menu { position: fixed; inset: auto; margin: 0; width: 290px; max-height: calc(100vh - 120px); overflow: auto; padding: 6px 0; background: var(--raised);
   color: var(--text); border: 1px solid var(--line-strong); border-radius: 4px; box-shadow: 0 8px 24px rgba(0, 0, 0, .5); }
@@ -118,7 +133,6 @@ kbd { font: 11px var(--mono); color: var(--muted); border: 1px solid var(--line-
 .mode-play #outliner, .mode-play #inspector { display: none; }
 .mode-play #app, #app.mode-play { grid-template-columns: minmax(0, 1fr); grid-template-areas: "top" "vp" "tl"; grid-template-rows: 44px minmax(0, 1fr) 54px; }
 #app.mode-play .tl-body { display: none; }
-#app.mode-play .vp-bar { display: none; }
 #app.mode-render #outliner { display: none; }
 #app.mode-render { grid-template-columns: minmax(0, 1fr) 330px; grid-template-areas: "top top" "vp insp" "tl tl"; }
 .progress { height: 6px; background: var(--ink); border-radius: 3px; overflow: hidden; }
