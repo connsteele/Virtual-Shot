@@ -14,7 +14,7 @@ const SNAP = 1 / 120;
 export class Inspector {
   constructor(E, el, title) {
     this.E = E; this.el = el; this.title = title;
-    E.on('select', () => this.draw()); E.on('change', () => this.draw()); E.on('view', () => this.draw()); E.on('frame', () => this.refresh()); E.on('mode', () => this.draw());
+    E.on('select', () => this.draw()); E.on('change', () => this.draw()); E.on('view', () => this.draw()); E.on('frame', () => this.refresh()); E.on('mode', () => this.draw()); E.on('take', () => this.draw());
     el.addEventListener('change', e => this.onInput(e.target, true));
     el.addEventListener('click', e => { const b = e.target.closest('button'); if (b) this.onButton(b); });
   }
@@ -31,6 +31,7 @@ export class Inspector {
       <span class="keynav">${anim ? `<button type="button" data-act="prevkey" title="Previous key">◀</button><button type="button" data-act="togglekey" class="${atKey ? 'on' : ''}" title="${atKey ? 'Delete the key here' : 'Add a key here'}">◆</button><button type="button" data-act="nextkey" title="Next key">▶</button>` : ''}</span>
     </div>`;
   }
+  flagRow(path, label, on) { return `<div class="prop static"><label>${esc(label)}</label><input type="checkbox" ${on ? 'checked' : ''} data-objp="${path}" aria-label="${esc(label)}"></div>`; }
   staticRow(path, label, value, step = 0.01, attrs = '') {
     return `<div class="prop static"><label>${esc(label)}</label><input type="number" step="${step}" value="${value}" data-look="${path}" ${attrs} aria-label="${esc(label)}"></div>`;
   }
@@ -56,7 +57,17 @@ export class Inspector {
         html += `<div class="sect"><h3>Camera rig · head-on to ${esc(o.rig.frame)}</h3>${RIG.map(([n, l, u, stp, dec]) => this.keyRow('cam', 'rig.' + n, l, u, stp, dec, st.rig[n])).join('')}
           <div class="note">Distance and pan are in glass widths, as Black Page keyed them; FOV and distance ease geometrically.</div></div>
           <div class="sect"><h3>Focus</h3>${(this.track('cam', 'focus')?.keys || []).map(k => `<div class="note">${k.t.toFixed(2)} s · ${esc(k.v.target)} · ${k.v.px} px/dioptre${k.curve ? ' · ' + esc(k.curve) : ''}</div>`).join('')}
-          <div class="note">Focus keys are records (a target object and blur settings); editing them is not in the spike.</div></div>`;
+          <div class="note">Focus keys are records (a target object and blur settings); editing them is not in the spike.</div></div>
+          <div class="sect"><h3>Handheld</h3>${this.flagRow('handheld.on', 'Handheld shake', o.handheld?.on)}
+            ${[['amount', 'Amount', 1, 0.05], ['rot', 'Sway (°)', 0.6, 0.05], ['roll', 'Roll (°)', 0.35, 0.05], ['pos', 'Drift (m)', 0.004, 0.001], ['freq', 'Speed (Hz)', 0.7, 0.05], ['seed', 'Seed', 1, 1]]
+              .map(([k, l, d, stp]) => `<div class="prop static"><label>${l}</label><input type="number" step="${stp}" value="${o.handheld?.[k] ?? d}" data-objp="handheld.${k}" aria-label="Handheld ${l}"></div>`).join('')}
+            <div class="note">Procedural and repeatable: the same time always gives the same shake. Off by default.</div></div>
+          <div class="sect"><h3>Shutter (motion blur)</h3>${this.flagRow('shutter.on', 'Motion blur', o.shutter?.on)}
+            <div class="prop static"><label>Shutter angle (°)</label><input type="number" step="15" value="${o.shutter?.angle ?? 180}" data-objp="shutter.angle" aria-label="Shutter angle"></div>
+            <div class="prop static"><label>Samples</label><input type="number" step="1" min="2" value="${o.shutter?.samples ?? 8}" data-objp="shutter.samples" aria-label="Shutter samples"></div>
+            <div class="note">Render quality and renders to disk only: each frame is rendered once per sample and averaged.</div></div>
+          <div class="sect"><h3>Gamepad take</h3><button type="button" data-act="take">${E.take?.on ? 'Stop take' : 'Record take'}</button>
+            <div class="note">Plays the shot and records the rig from a gamepad: left stick pans, right stick turns, triggers dolly, bumpers zoom. A stops and writes keys (thinned to Bézier curves, one undo); B cancels.</div></div>`;
       }
       if (o.ring) html += `<div class="sect"><h3>Ringing</h3>${['t', 'intensity', 'light', 'radius', 'rumble'].map(k => `<div class="prop static"><label>${k === 't' ? 'Starts at (s)' : k}</label><input type="number" step="0.01" value="${o.ring[k]}" data-objp="ring.${k}" aria-label="ring ${k}"></div>`).join('')}</div>`;
       if (o.type === 'card') html += `<div class="sect"><h3>Card</h3><div class="prop static"><label>Brightness</label><input type="number" step="0.05" value="${o.brightness}" data-objp="brightness" aria-label="Brightness"></div></div>`;
@@ -132,7 +143,7 @@ export class Inspector {
         else { tf[inp.dataset.tf] = (tf[inp.dataset.tf] || (inp.dataset.tf === 'scale' ? [1, 1, 1] : [0, 0, 0])).slice(); tf[inp.dataset.tf][i] = +inp.value; }
         E.cmd.run('setTransform', { id: o.id, transform: tf }); return; }
       if (inp.dataset.obj) { E.cmd.run('rename', { id: E.sel.id, name: inp.value }); return; }
-      if (inp.dataset.objp) { E.cmd.run('setObjectProp', { id: E.sel.id, path: inp.dataset.objp, value: inp.type === 'number' ? +inp.value : inp.value }); return; }
+      if (inp.dataset.objp) { E.cmd.run('setObjectProp', { id: E.sel.id, path: inp.dataset.objp, value: inp.type === 'checkbox' ? inp.checked : inp.type === 'number' ? +inp.value : inp.value }); return; }
       if (inp.dataset.look) { E.cmd.run('setLook', { path: inp.dataset.look, value: +inp.value }); return; }
       if (inp.dataset.ev) { const k = inp.dataset.k; let patch;
         if (k === 't') patch = { t: +inp.value };
@@ -146,6 +157,7 @@ export class Inspector {
   onButton(b) {
     const E = this.E, row = b.closest('.prop[data-target]'), act = b.dataset.act, t = E.frame / E.fps;
     if (act === 'stopRender') return E.stopRender();
+    if (act === 'take') { E.take.on ? E.take.stop(true) : E.take.start(); return this.draw(); }
     if (act === 'render') return E.emit('renderFrames', { from: E.renderFrom ?? 0, to: E.renderTo ?? E.last, dir: E.renderDir || 'editor_render' });
     if (!row) return;
     const target = row.dataset.target, prop = row.dataset.prop, tr = this.track(target, prop), v = +row.querySelector('input').value;

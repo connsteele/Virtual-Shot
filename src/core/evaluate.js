@@ -4,6 +4,7 @@
 import { clamp, lerp, easeInOut, hash, hex } from './curves.js';
 import { trackValue, trackSegment } from './tracks.js';
 import { add, sub, scl, dot, cross, nrm, xf, M4, trsOf, frameOf } from './vec.js';
+import { applyHandheld } from './handheld.js';
 
 /** Index a document once: objects by id, tracks by "target.prop". */
 export function indexDoc(doc) {
@@ -87,14 +88,16 @@ function ghostLevel(g, t, i) {
   if (fl < (g.dropout ?? 0.18)) e *= 0.15; else e *= 0.75 + 0.25 * fl; return e * (g.intensity || 0.3);
 }
 
-export function evaluate(doc, t, geo, ix = indexDoc(doc)) {
+/** over: live overrides for the editor (over.rig: rig values from a gamepad take being recorded). */
+export function evaluate(doc, t, geo, ix = indexDoc(doc), over = null) {
   const fps = doc.fps, frame = Math.round(t * fps), aspect = doc.output.width / doc.output.height;
   const val = (key, def) => { const tr = ix.tracks[key]; return tr ? trackValue(tr, t) : def; };
   const cam = ix.obj.cam;
   const rig = Object.fromEntries(RIG.map(n => [n, val(`cam.rig.${n}`, ix.tracks[`cam.rig.${n}`]?.default ?? 0)]));
+  if (over?.rig) Object.assign(rig, over.rig);
   const chaos = val('scene.params.chaos', doc.params.chaos);
   const R = doc.sequence.reveal, revealK = easeInOut(clamp((t - R.start) / R.duration, 0, 1));
-  const pose = camPose(ix, cam, rig, aspect);
+  const pose = applyHandheld(camPose(ix, cam, rig, aspect), cam.handheld, t);   // handheld: off unless cam.handheld.on
   const vp = M4.mul(M4.persp(pose.fovRender * Math.PI / 180, aspect, pose.near, pose.far), M4.look(pose.eye, pose.target, pose.up));
   const L = doc.look.lighting, gl = L.glow;
   const glowCol = gl.base.map((v, i) => v * (gl.chaosGain[0] + gl.chaosGain[1] * chaos) + gl.floor[i]);

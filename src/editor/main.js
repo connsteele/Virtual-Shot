@@ -10,6 +10,7 @@ import { Inspector } from './inspector.js';
 import { Viewport } from './viewport.js';
 import { Timeline } from './timeline.js';
 import { Perf } from './perf.js';
+import { Take } from './take.js';
 
 const $ = id => document.getElementById(id);
 const params = new URLSearchParams(location.search);
@@ -78,7 +79,8 @@ async function boot() {
   // full look whatever the viewport shows.
   const viewport = new Viewport(E), perf = E.perf = new Perf(E);
   let pending = false, idleTimer = null, refineJob = null;
-  E.state = () => evaluate(E.doc, E.frame / E.fps, shot.geo, E.ix);
+  E.state = () => evaluate(E.doc, E.frame / E.fps, shot.geo, E.ix, E.over);
+  E.take = new Take(E);
   const hud = text => { $('hudQuality').textContent = E.view === 'camera' ? text : ''; };
   // The 2D layers are drawn on the CPU (Canvas 2D) and copied to the GPU; they depend only on time and the document,
   // so moving a camera, a toggle or an object reuses the last drawing instead of redrawing and re-uploading it.
@@ -117,8 +119,23 @@ async function boot() {
   // Chrome can be slow to report finished work while no frames are drawn, so the wait is capped (a slice is ~15–25 ms).
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   const gpuIdle = () => Promise.race([shot.backend === 'WebGPU' ? shot.renderer.backend.device.queue.onSubmittedWorkDone() : sleep(25), sleep(40)]);
+  /** Sample times inside the shutter of the current frame (centred on it), or null when cam.shutter is off.
+   *  cam.shutter = { on, angle (degrees; 180 = half the frame interval), samples }. Kept before the cut. */
+  E.shutterTimes = () => { const sh = E.ix.obj.cam.shutter; if (!sh || !sh.on) return null;
+    const n = Math.max(2, sh.samples || 8), open = (sh.angle ?? 180) / 360 / E.fps, t = E.frame / E.fps;
+    return Array.from({ length: n }, (_, i) => Math.min(E.doc.cut - 1e-4, Math.max(0, t + ((i + 0.5) / n - 0.5) * open))); };
+  /** A Render-quality frame with shutter motion blur: one sample per step, waiting for the GPU between them; the last
+   *  step draws the canvas, then after(canvas) runs in the same task (to copy it). Viewport refine and renders to disk. */
+  E.renderShutter = async ({ output = false, after = null } = {}) => {
+    const st = E.st = E.state(), times = E.shutterTimes(); E.layerOpts = layerOpts(st);
+    const job = shot.shutterSteps(times.map(tt => evaluate(E.doc, tt, shot.geo, E.ix, E.over)), { ...E.layerOpts, quality: 'render', show: output ? undefined : E.show });
+    for (;;) { perf.begin('shutter'); const r = job.next(); perf.end(); if (r.done) break; await gpuDone(); if (!output && refineJob !== shutterTag) return false; }
+    after?.($('gpu')); E.quality = 'render'; hud(`Render quality, motion blur (${times.length} samples)`); return true;
+  };
+  const shutterTag = {}, gpuDone = () => Promise.race([shot.backend === 'WebGPU' ? shot.renderer.backend.device.queue.onSubmittedWorkDone() : sleep(150), sleep(2000)]);
   const refine = async () => {
     if (E.view !== 'camera' || E.playing || E.interacting || E.refineMode !== 'idle' || !E.st) return;
+    if (E.shutterTimes()) { refineJob = shutterTag; hud('Motion blur…'); await E.renderShutter(); if (refineJob === shutterTag) refineJob = null; return; }
     const SLICES = 16, job = refineJob = shot.renderSteps(E.st, { ...E.layerOpts, upload: { chat: false, flat: false, pops: false }, quality: 'render', slices: SLICES, show: E.show });
     for (let i = 1; ; i++) {
       if (refineJob !== job) return;
@@ -195,7 +212,9 @@ async function boot() {
     try {
       for (let f = from; f <= to; f++) {
         if (E.renderCancel) break;
-        E.frame = f; E.renderNow('render', { output: true }); ox.drawImage($('gpu'), 0, 0);
+        E.frame = f;
+        if (E.shutterTimes()) await E.renderShutter({ output: true, after: c => ox.drawImage(c, 0, 0) });
+        else { E.renderNow('render', { output: true }); ox.drawImage($('gpu'), 0, 0); }
         const blob = await (await fetch(out.toDataURL('image/png'))).blob(), name = `${dir}/f${String(f).padStart(5, '0')}.png`;
         const p = (async () => { for (let i = 0; ; i++) { try { const r = await fetch('/save/' + name, { method: 'POST', body: blob }); if (r.ok) return; throw new Error('HTTP ' + r.status); }
           catch (e) { if (i >= 4) throw e; await new Promise(r => setTimeout(r, 1000 * (i + 1))); } } })().finally(() => inflight.delete(p));

@@ -1,12 +1,12 @@
 // Builds a three.js scene from the scene document and renders evaluated frames with the Black Page look.
 // WebGPURenderer (falls back to WebGL2 by itself) with TSL materials; no colour management, like the engine.
 import * as THREE from 'three/webgpu';
-import { mrt, output, vec2, vec4, positionWorld, cameraPosition, uniform, uv, Fn } from 'three/tsl';
+import { mrt, output, vec2, vec4, positionWorld, cameraPosition, uniform, uv, Fn, texture } from 'three/tsl';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { bodyMaterial, crtMaterial, glowMaterial, makeLightUniforms } from './materials.js';
 import { makePost, makeOutline } from './post.js';
 import { makeHaze } from './haze.js';
-import { makeComposite, makeHazeMeter, makeEmitAverage, makeAreaUpscale, makeBloom, flatScreenQuad } from './final_comp.js';
+import { makeComposite, makeHazeMeter, makeEmitAverage, makeAreaUpscale, makeBloom, flatScreenQuad, srgbToLinear, linearToSrgb } from './final_comp.js';
 import { indexDoc } from '../core/evaluate.js';
 import { add, scl, xf, nrm, trsOf } from '../core/vec.js';
 
@@ -252,15 +252,46 @@ export class ShotRenderer {
     C.hazeOn.value = hazeOn ? 1 : 0; C.popsOn.value = final && opts.pops && show.pops ? 1 : 0;
     C.k.value = c.k; C.sq.value = c.squint; C.aspect.value = this.W / this.H;
     C.blur.value = this.quality === 'play' ? 1.0 / this.hazeRT.width : 0;
-    this.mark('composite'); r.setRenderTarget(pixel ? this.pixelRT : null); this.comp.quad.render(r);
+    this.mark('composite'); r.setRenderTarget(pixel ? this.pixelRT : this.outTarget || null); this.comp.quad.render(r);
     if (pixel) {
       const c = cTrue, B = this.bloom, UU = this.upscale.U, f = nrm(c.target.map((v, i) => v - c.eye[i])), rr = nrm([f[1] * c.up[2] - f[2] * c.up[1], f[2] * c.up[0] - f[0] * c.up[2], f[0] * c.up[1] - f[1] * c.up[0]]);
       UU.eye.value.set(...c.eye); UU.cf.value.set(...f); UU.cr.value.set(...rr); UU.cu.value.set(rr[1] * f[2] - rr[2] * f[1], rr[2] * f[0] - rr[0] * f[2], rr[0] * f[1] - rr[1] * f[0]);
       UU.tanY.value = Math.tan(c.fovRender * Math.PI / 360); UU.aspect.value = this.W / this.H; UU.k.value = c.k;
       UU.popsOn.value = C.popsOn.value; UU.detail.value = this.pixel.sharpScreen && !st.flat.before ? 1 - st.flat.overlay : 0;
       if (UU.bloom.value > 0) { this.mark('bloom'); r.setRenderTarget(this.bloomA); B.quads.bright.render(r); r.setRenderTarget(this.bloomB); B.quads.blurX.render(r); r.setRenderTarget(this.bloomA); B.quads.blurY.render(r); }
-      this.mark('area upscale'); r.setRenderTarget(null); this.upscale.quad.render(r);
+      this.mark('area upscale'); r.setRenderTarget(this.outTarget || null); this.upscale.quad.render(r);
     }
+  }
+
+  /** Shutter motion blur by sub-frame accumulation: each evaluated state (one per sample time inside the shutter) is
+   *  rendered with the full look into sampleRT, averaged in linear light into a half-float buffer, and the mean is
+   *  written to the canvas. Everything that moves blurs (camera, the rumbling remote, the haze), exactly, at N times the
+   *  cost of a frame. The 2D layers are uploaded once (they are drawn for the frame's own time). */
+  renderShutter(states, opts = {}) { const job = this.shutterSteps(states, opts); while (!job.next().done) { /* all at once */ } }
+  /** renderShutter() one sample per step, so the caller can wait for the GPU between samples: N Render-quality frames
+   *  queued at once (8 x ~130 ms of haze) hung the GPU in testing (DXGI_ERROR_DEVICE_HUNG). The last step draws the
+   *  canvas, so the caller can copy it in the same task. */
+  *shutterSteps(states, opts = {}) {
+    const r = this.renderer, n = states.length, w = this.OW, h = this.OH;
+    if (!this.acc) {
+      const sampleRT = new THREE.RenderTarget(w, h, { depthBuffer: false, generateMipmaps: false, type: THREE.UnsignedByteType });
+      const accRT = new THREE.RenderTarget(w, h, { depthBuffer: false, generateMipmaps: false, type: THREE.HalfFloatType });
+      const wgt = uniform(1);
+      const add = new THREE.NodeMaterial(); add.fragmentNode = vec4(srgbToLinear(texture(sampleRT.texture, uv()).rgb).mul(wgt), wgt);
+      Object.assign(add, { depthTest: false, depthWrite: false, transparent: true, blending: THREE.CustomBlending, blendSrc: THREE.OneFactor, blendDst: THREE.OneFactor,
+        blendEquation: THREE.AddEquation, blendSrcAlpha: THREE.OneFactor, blendDstAlpha: THREE.OneFactor });
+      const out = new THREE.NodeMaterial(); out.fragmentNode = vec4(linearToSrgb(texture(accRT.texture, uv()).rgb), 1); Object.assign(out, { depthTest: false, depthWrite: false });
+      this.acc = { sampleRT, accRT, wgt, add: new THREE.QuadMesh(add), out: new THREE.QuadMesh(out) };
+    }
+    const A = this.acc; if (A.sampleRT.width !== w || A.sampleRT.height !== h) { A.sampleRT.setSize(w, h); A.accRT.setSize(w, h); }
+    A.wgt.value = 1 / n; const ac = r.autoClear;
+    r.setRenderTarget(A.accRT); r.setClearColor(0x000000, 0); r.clear(); r.setClearColor(0x000000, 1);
+    for (let i = 0; i < n; i++) {
+      this.outTarget = A.sampleRT; this.render(states[i], i ? { ...opts, upload: { chat: false, flat: false, pops: false } } : opts); this.outTarget = null;
+      this.mark(`shutter accumulate ${i + 1}/${n}`); r.autoClear = false; r.setRenderTarget(A.accRT); A.add.render(r); r.autoClear = ac;
+      yield i;
+    }
+    this.mark('shutter resolve'); r.setRenderTarget(null); A.out.render(r);
   }
 
   /** The haze for this frame: the screen's light grid, then the ray march into hazeRT (a fraction of the scene buffer). */
