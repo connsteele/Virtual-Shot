@@ -100,7 +100,7 @@ export class Inspector {
       <div class="prop static"><label>From frame</label><input type="number" id="rFrom" value="${E.renderFrom ?? 0}" min="0" max="${E.last}" aria-label="From frame"></div>
       <div class="prop static"><label>To frame</label><input type="number" id="rTo" value="${E.renderTo ?? E.last}" min="0" max="${E.last}" aria-label="To frame"></div>
       <div class="prop static"><label>Folder</label><input type="text" id="rDir" value="${esc(E.renderDir || 'editor_render')}" aria-label="Output folder"></div>
-      <div class="note">PNG, 1920×1080, Render quality, to G:\\Claude\\Virtual Legacy\\Channel\\Virtual Shot spike\\&lt;folder&gt;.</div>
+      <div class="note">PNG, 1920×1080, Render quality, to G:\\Claude\\Virtual Legacy\\Channel\\Virtual Shot spike\\&lt;folder&gt;. Frames always have the full look: the viewport's Show settings and hidden objects don't apply.</div>
       <button type="button" class="primary" data-act="render" ${local ? '' : 'disabled'}>Render frames</button>
       ${local ? '' : '<div class="note">Rendering to disk needs the local copy of the editor (artifacts can\'t write files).</div>'}
       <div class="progress" aria-hidden="true"><div id="rBar"></div></div><div class="note" id="rMsg"></div></div>`;

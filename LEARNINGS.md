@@ -420,6 +420,54 @@ document, so the scene document stays the only source of truth.
 - Git Bash rewrites arguments that look like absolute paths (`/dist/...` became `C:/Program Files/Git/dist/...`), so
   the headless runner needs `MSYS_NO_PATHCONV=1` for URL paths without a query string.
 
+### 7.1 Why the editor felt choppy, and visibility toggles
+
+Connor found the editor choppy. Measured per frame in headless Chrome (RTX 4090, WebGPU), at frames 300 / 720 / 1000:
+
+| | Render quality | Play quality |
+|---|---|---|
+| Whole frame | 66 / 156 / 178 ms | 7 / 14 / 14 ms |
+| Haze ray march alone | 27 / 161 / 202 ms | 3 / 6 / 5 ms |
+| Everything but the haze | 12 / 17 / 16 ms | 6 / 6 / 6 ms |
+
+The haze was about 90% of a Render quality frame. The editor drew Render quality straight away for any change that
+wasn't a drag (a frame step, a click, an inspector edit), and refined to Render quality 220 ms after a drag stopped, so
+each of those cost a 150–200 ms stall, and a drag that started during a refine waited for it.
+
+What changed:
+- **Every change draws at Play quality first** (7–23 ms). After 250 ms without changes, the camera view refines to
+  Render quality in 16 horizontal bands of the haze march (one band per step, 15–35 ms each, scissored, no clear), and
+  any change drops the refine. The bands add up to the same picture as a one-shot Render quality frame (identical
+  pixels at frames 720 and 1000). A Quality menu can turn the refine off ("Play quality only").
+- **A Show menu** in a viewport header (Unreal's Show flags, Blender's Overlays popover): haze, depth of field, lens
+  warp, LED glows, ghost flashes and pops; and the overlays (safe frames, grid, shot camera, haze bounds, lights,
+  selection bounds). Without haze, a Render quality frame is 12–22 ms; without haze, lens warp and depth of field, 6 ms.
+- **Eye toggles in the outliner** (Blender) for each placed object and for the haze, ghost flashes and pops. H hides
+  the selection, Alt+H reveals everything. Hidden objects can't be picked, and an LED glow hides with its object.
+- **Viewport only.** These settings live in the browser, not in the scene document, and frames rendered to disk always
+  have the full look and every object (checked: identical pixels with the haze off and the remote hidden).
+
+**What this says about the architecture:**
+- **Viewport quality is a policy, separate from the look.** The look's settings define the picture; the editor
+  chooses how much of it to compute while someone works. The doc should define the quality tiers (Play, Render) as
+  sampling choices with the same framing, timing and settings (it does for playback) and make progressive refinement
+  the editor default.
+- **Expensive passes should be sliceable.** Anything that can't finish in a frame (the haze march here; path tracing
+  or heavy bakes later) should render in pieces that can be dropped. A full-screen pass with a scissor rectangle was
+  enough here.
+- **Viewport visibility is editor state.** Hiding things in the viewport shouldn't change the document or the
+  render (Blender's eye versus its render toggle). If the shot needs render-time switches, they belong in the
+  document as their own settings.
+
+**Gotchas:**
+- A WebGPU canvas only holds its picture until it is presented. `drawImage(canvas)` in the same task as the render
+  works (the export path does this); after an `await`, it returns a blank image, which made a first test report
+  "no difference" for everything.
+- `queue.onSubmittedWorkDone()` can take seconds to resolve in Chrome when no frames are being drawn (headless, or no
+  animation frame requested). The refine waits for it to pace the bands, but caps the wait at 40 ms.
+- Headless Chrome doesn't run `requestAnimationFrame` here unless frames are forced, so editor tests that need the
+  frame loop run with `?bg` (timers instead of animation frames).
+
 ## Running the spike
 
 ```

@@ -4,7 +4,7 @@ import { evaluate, indexDoc } from '../core/evaluate.js';
 import { createCommandStack } from '../core/commands.js';
 import { ChatLayer } from '../layers/chat2d.js';
 import { PopsLayer } from '../layers/pops2d.js';
-import { ShotRenderer, assetUrl } from '../render/shot_renderer.js';
+import { ShotRenderer, assetUrl, SHOW } from '../render/shot_renderer.js';
 import { Outliner } from './outliner.js';
 import { Inspector } from './inspector.js';
 import { Viewport } from './viewport.js';
@@ -52,37 +52,70 @@ async function boot() {
   E.on('eventsMoved', () => layers());   // a dragged message re-lays out the chat live
   window.VS = { E, cmd: (n, a) => E.cmd.run(n, a), commands: () => E.cmd.list(), evaluate: t => evaluate(E.doc, t, shot.geo, E.ix) };
 
-  // ---- rendering: Play quality while things move, Render quality once they stop (camera view)
+  // ---- viewport visibility (Blender's eye toggles and overlays, Unreal's Show menu): editor-only, kept in this browser
+  E.show = { ...SHOW, safe: true, grid: true, frustum: true, hazeBox: true, lights: true, bounds: true };
+  E.hidden = new Set(); E.refineMode = 'idle';
+  const viewKey = 'vs-editor-view:' + doc.name;
+  try { const v = JSON.parse(localStorage.getItem(viewKey) || 'null');
+    if (v) { Object.assign(E.show, v.show); E.hidden = new Set(v.hidden || []); E.refineMode = v.refine || 'idle'; } } catch { /* storage may be blocked */ }
+  const keepView = () => { try { localStorage.setItem(viewKey, JSON.stringify({ show: E.show, hidden: [...E.hidden], refine: E.refineMode })); } catch { /* storage may be blocked */ } };
+  E.setShow = (k, on) => { E.show[k] = on; keepView(); E.emit('show'); E.requestRender(); };
+  E.setHidden = (id, hide) => { hide ? E.hidden.add(id) : E.hidden.delete(id); keepView(); E.emit('show'); E.requestRender(); };
+  E.revealAll = () => { E.hidden.clear(); keepView(); E.emit('show'); E.requestRender(); };
+  E.setRefine = m => { E.refineMode = m; keepView(); E.emit('show'); E.requestRender(); };
+
+  // ---- rendering: every change draws at Play quality straight away (~15 ms); once things stop, the camera view
+  // refines to Render quality in 16 slices (15–25 ms each), and any new change drops the refine. Renders to disk use the
+  // full look whatever the viewport shows.
   const viewport = new Viewport(E);
-  let pending = null, idleTimer = null;
+  let pending = false, idleTimer = null, refineJob = null;
   E.state = () => evaluate(E.doc, E.frame / E.fps, shot.geo, E.ix);
-  E.renderNow = (quality = 'render') => {
+  const hud = text => { $('hudQuality').textContent = E.view === 'camera' ? text : ''; };
+  const layerOpts = st => {
+    const t = st.t, needFlat = st.flat.before || st.flat.overlay > 0;
+    if (needFlat) chat.render(fctx, t, st.chaos, st.flat.before ? { geom: 'flat' } : { geom: 'flat', chrome: 0 });
+    if (!st.flat.before) chat.render(tctx, t, st.chaos, { geom: 'tall' });
+    return { final: true, flat: needFlat, pops: E.pops.render(pctx, t) };
+  };
+  E.renderNow = (quality = 'play', { output = false } = {}) => {
+    refineJob = null; clearTimeout(idleTimer);
     const st = E.st = E.state(), t = st.t;
-    if (E.view === 'free') {
+    shot.setHidden(output ? new Set() : E.hidden);
+    if (E.view === 'free' && !output) {
       chat.render(tctx, t, st.chaos, { geom: 'tall' });
-      shot.renderFree(st, viewport.freeCam, viewport.helpers());
+      shot.renderFree(st, viewport.freeCam, viewport.helpers(), E.show);
     } else {
-      const needFlat = st.flat.before || st.flat.overlay > 0;
-      if (needFlat) chat.render(fctx, t, st.chaos, st.flat.before ? { geom: 'flat' } : { geom: 'flat', chrome: 0 });
-      if (!st.flat.before) chat.render(tctx, t, st.chaos, { geom: 'tall' });
-      const anyPops = E.pops.render(pctx, t);
-      shot.render(st, { final: true, flat: needFlat, pops: anyPops, quality });
+      E.layerOpts = layerOpts(st);
+      shot.render(st, { ...E.layerOpts, quality, show: output ? undefined : E.show });
     }
     E.quality = quality; viewport.overlay(st);
     $('timecode').textContent = E.timecode(E.frame); $('frameNo').textContent = `f ${E.frame} · ${t.toFixed(3)} s`;
-    $('hudQuality').textContent = E.view === 'camera' ? (quality === 'play' ? 'Play quality' : 'Render quality') : '';
+    hud(quality === 'play' ? 'Play quality' : 'Render quality');
     E.emit('frame', st);
   };
   const chat = { render: (...a) => E.chat.render(...a) };
-  E.requestRender = (quality) => {
-    const q = quality || (E.playing || E.interacting ? 'play' : 'render');
-    if (pending) { pending.q = pending.q === 'render' || q === 'render' ? 'render' : 'play'; return; }
-    pending = { q };
-    requestAnimationFrame(() => { const p = pending; pending = null; E.renderNow(p.q);
-      clearTimeout(idleTimer);
-      if (p.q === 'play' && !E.playing) idleTimer = setTimeout(() => { if (!E.playing && !E.interacting) E.renderNow('render'); }, 220); });
+  // one slice per step, each after the GPU has finished the last, so an edit never waits behind a queue of slices.
+  // Chrome can be slow to report finished work while no frames are drawn, so the wait is capped (a slice is ~15–25 ms).
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const gpuIdle = () => Promise.race([shot.backend === 'WebGPU' ? shot.renderer.backend.device.queue.onSubmittedWorkDone() : sleep(25), sleep(40)]);
+  const refine = async () => {
+    if (E.view !== 'camera' || E.playing || E.interacting || E.refineMode !== 'idle' || !E.st) return;
+    const SLICES = 16, job = refineJob = shot.renderSteps(E.st, { ...E.layerOpts, quality: 'render', slices: SLICES, show: E.show });
+    for (let i = 1; ; i++) {
+      if (refineJob !== job) return;
+      if (job.next().done) break;
+      hud(`Refining ${Math.round(i / (SLICES + 1) * 100)}%`);
+      await Promise.all([gpuIdle(), new Promise(r => requestAnimationFrame(r))]);
+    }
+    refineJob = null; E.quality = 'render'; hud('Render quality');
   };
-  E.setFrame = f => { E.frame = Math.max(0, Math.min(E.last, Math.round(f))); E.requestRender(E.playing || E.interacting ? 'play' : undefined); };
+  E.requestRender = () => {
+    refineJob = null; clearTimeout(idleTimer);
+    if (pending) return; pending = true;
+    requestAnimationFrame(() => { pending = false; E.renderNow('play');
+      if (!E.playing && !E.interacting) idleTimer = setTimeout(refine, 250); });
+  };
+  E.setFrame = f => { E.frame = Math.max(0, Math.min(E.last, Math.round(f))); E.requestRender(); };
   E.select = sel => { E.sel = sel; E.emit('select', sel); E.requestRender(); };
 
   // ---- panels
@@ -92,9 +125,9 @@ async function boot() {
   // ---- transport and playback (real time, Play quality; drops frames to keep time like an NLE)
   let t0 = 0, f0 = 0;
   const loop = now => { if (!E.playing) return; const f = f0 + Math.floor((now - t0) / 1000 * E.fps);
-    if (f > E.last) { E.playing = false; $('playBtn').textContent = 'Play'; E.frame = E.last; E.renderNow('render'); return; }
+    if (f > E.last) { E.playing = false; $('playBtn').textContent = 'Play'; E.frame = E.last; E.requestRender(); return; }
     E.frame = f; E.renderNow('play'); requestAnimationFrame(loop); };
-  E.togglePlay = () => { if (E.playing) { E.playing = false; $('playBtn').textContent = 'Play'; E.requestRender('render'); return; }
+  E.togglePlay = () => { if (E.playing) { E.playing = false; $('playBtn').textContent = 'Play'; E.requestRender(); return; }
     if (E.frame >= E.last) E.frame = 0; E.playing = true; t0 = performance.now(); f0 = E.frame; $('playBtn').textContent = 'Pause'; requestAnimationFrame(loop); };
   const keyTimes = () => [...new Set(E.doc.tracks.flatMap(tr => tr.keys.map(k => Math.round(k.t * E.fps))))].sort((a, b) => a - b);
   const transport = { start: () => E.setFrame(0), end: () => E.setFrame(E.last), prev: () => E.setFrame(E.frame - 1), next: () => E.setFrame(E.frame + 1),
@@ -131,7 +164,7 @@ async function boot() {
     const t0 = performance.now(), n = to - from + 1; let done = 0; const inflight = new Set();
     try {
       for (let f = from; f <= to; f++) {
-        E.frame = f; E.renderNow('render'); ox.drawImage($('gpu'), 0, 0);
+        E.frame = f; E.renderNow('render', { output: true }); ox.drawImage($('gpu'), 0, 0);
         const blob = await (await fetch(out.toDataURL('image/png'))).blob(), name = `${dir}/f${String(f).padStart(5, '0')}.png`;
         const p = (async () => { for (let i = 0; ; i++) { try { const r = await fetch('/save/' + name, { method: 'POST', body: blob }); if (r.ok) return; throw new Error('HTTP ' + r.status); }
           catch (e) { if (i >= 4) throw e; await new Promise(r => setTimeout(r, 1000 * (i + 1))); } } })().finally(() => inflight.delete(p));
@@ -141,7 +174,7 @@ async function boot() {
       await Promise.all(inflight);
       msg(`Rendered ${n} frames in ${((performance.now() - t0) / 1000).toFixed(1)} s to ${dir}`);
     } catch (e) { msg('Render failed: ' + e.message); }
-    finally { E.rendering = false; if (was !== 'camera') setView(was); }
+    finally { E.rendering = false; if (was !== 'camera') setView(was); else E.requestRender(); }
   });
   E.status = msg => { $('status').textContent = msg; clearTimeout(E._st); E._st = setTimeout(() => { $('status').textContent = ''; }, 4000); };
 
@@ -161,7 +194,7 @@ async function boot() {
     E.emit('key', e);
   });
   window.addEventListener('resize', () => E.emit('resize'));
-  E.emit('change', 'boot'); E.emit('select', E.sel); E.renderNow('render');
+  E.emit('change', 'boot'); E.emit('select', E.sel); E.emit('show'); E.renderNow('render'); E.quality = 'render';
   window.VS_READY = true;
 }
 boot().catch(e => { console.error(e); $('status').textContent = 'Failed: ' + e.message; window.VS_ERROR = String(e.stack || e); });

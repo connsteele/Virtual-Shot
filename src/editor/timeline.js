@@ -211,25 +211,25 @@ export class Timeline {
     if (D.type === 'scrub') { E.setFrame(this.Xt(px) * E.fps); return; }
     if (D.type === 'box') { D.x1 = px; D.y1 = py; this.boxSelect(D); this.draw(); return; }
     if (D.type === 'ev') { const dt = snapT((px - D.x0) / (this._L.right - this._L.left) * (this.view[1] - this.view[0])); D.h.ev.t = Math.max(0, +(D.t0 + dt).toFixed(4)); D.moved = true;
-      E.emit('eventsMoved'); this.draw(); E.requestRender('play'); return; }
+      E.emit('eventsMoved'); this.draw(); E.requestRender(); return; }
     if (D.type === 'k') { const dT = snapT((px - D.x0) / (this._L.right - this._L.left) * (this.view[1] - this.view[0]));
       for (const o of D.orig) { o.s.k.t = Math.max(0, snapT(o.t + (e.altKey ? 0 : dT)));
         if (this.mode === 'graph' && !e.ctrlKey) { const rr = D.r || this.range(o.s.tr); o.s.k.v = o.v + (py - D.y0) * -(rr[1] - rr[0]) / (this._L.bot - this._L.top - 4); } }
       for (const tr of new Set(D.orig.map(o => o.s.tr))) tr.keys.sort((a, b) => a.t - b.t);
-      D.moved = true; this.draw(); E.requestRender('play'); return; }
+      D.moved = true; this.draw(); E.requestRender(); return; }
     if (D.type === 'h') { const { tr, k, side, r: rr } = D.h; let dt = this.Xt(px) - k.t, dv = this.Yv(rr, py) - k.v;
       if (side === 'o') dt = Math.max(dt, 1e-3); else dt = Math.min(dt, -1e-3); if (e.altKey) k.brk = true;
       if (side === 'o') k.ho = [dt, dv]; else k.hi = [dt, dv];
       const K = tr.keys, i = K.indexOf(k), other = side === 'o' ? 'hi' : 'ho', otherBz = side === 'o' ? i > 0 && (k.curve || 'bezier') === 'bezier' : K[i + 1] && (K[i + 1].curve || 'bezier') === 'bezier';
       if (!k.brk && otherBz) { const sl = dv / dt, len = k[other] ? Math.abs(k[other][0]) : 0.3; k[other] = side === 'o' ? [-len, -sl * len] : [len, sl * len]; }
-      this.draw(); E.requestRender('play'); }
+      this.draw(); E.requestRender(); }
   }
   up() {
     const D = this.drag, E = this.E; this.drag = null; E.interacting = false;
     if (!D) return;
     if (D.type === 'k' || D.type === 'h') E.cmd.commit(D.type === 'k' ? 'moveKeys (drag)' : 'set handle', D.before);
     else if (D.type === 'ev') { if (D.moved) E.cmd.commit('setEvent (drag)', D.before); }
-    else E.requestRender('render');
+    else E.requestRender();
     this.draw();
   }
   boxSelect(B) {

@@ -20,6 +20,8 @@ export const assetUrl = ref => {
 };
 // ImageBitmap, not <img>.decode(): decode() never settles while the tab is hidden, and renders run in background tabs.
 const loadImage = async src => createImageBitmap(await (await fetch(src)).blob(), { premultiplyAlpha: 'none', colorSpaceConversion: 'none' });
+/** Parts of the look the editor can turn off in its viewport (all on for renders). */
+export const SHOW = { haze: true, dof: true, lens: true, glows: true, ghosts: true, pops: true };
 const m4 = a => new THREE.Matrix4().fromArray(Array.from(a));
 const v3 = a => new THREE.Vector3(...a);
 
@@ -110,6 +112,7 @@ export class ShotRenderer {
       }
       const M = Array.from(root.matrix.elements), ctrLocal = mn.map((v, c) => (v + mx[c]) / 2);
       this.geo.centres[o.id] = xf(M, ctrLocal); root.userData.ctrLocal = ctrLocal;
+      if (o.ring) this.ringNode = root;
       if (o.ring) this.geo.wii = { M, ctr: xf(M, ctrLocal), up: nrm([M[4], M[5], M[6]]), leds: this.ledParts.map(l => l.c0) };
       if (o.id === 'wii') this.wiiRoot = root;
       scene.add(root);
@@ -171,26 +174,53 @@ export class ShotRenderer {
    *  Play quality trades sampling for speed (haze at a quarter of the scene buffer, 3x longer steps and a 10x5 light
    *  grid; a sparser depth-of-field gather); framing, timing and the look's settings are the same. */
   render(st, opts = {}) {
-    const r = this.renderer, c = st.camera, final = opts.final !== false;
+    const job = this.renderSteps(st, opts);
+    while (!job.next().done) { /* all at once */ }
+  }
+
+  /** render() in steps, for the editor: the 3D pass, then the haze ray march in `slices` horizontal bands, then the
+   *  composite, yielding between them so a new edit can drop the job (about 15–25 ms each at 16 slices).
+   *  The picture is the same as render()'s. opts.show turns parts of the look off in the viewport (see SHOW). */
+  *renderSteps(st, opts = {}) {
+    const r = this.renderer, final = opts.final !== false, show = { ...SHOW, ...opts.show }, n = Math.max(1, opts.slices || 1);
     this.quality = opts.quality || 'render';
     if (st.cut) { r.setRenderTarget(this.finalRT); r.clear(); r.setRenderTarget(null); r.clear(); return; }
-    const hazeOn = !!(final && this.haze && opts.haze !== false && st.haze && st.haze.gain > 0 && !st.flat.before);
+    if (!show.lens) st = { ...st, camera: { ...st.camera, k: 0, ov: 1, fovRender: st.camera.fov } };
+    const hazeOn = !!(final && this.haze && show.haze && opts.haze !== false && st.haze && st.haze.gain > 0 && !st.flat.before);
     if (!st.flat.before) {
-      this.render3D(st);
-      if (hazeOn) this.renderHaze(st);
+      this.render3D(st, show);
+      if (hazeOn) {
+        if (n > 1) yield;
+        this.prepHaze(st);
+        for (let i = 0; i < n; i++) { this.marchSlice(i, n); if (i < n - 1) yield; }
+      }
     }
     if (opts.flat !== false) this.flatTex.needsUpdate = true;
     if (opts.pops) this.popsTex.needsUpdate = true;
-    const C = this.comp.U;
+    const C = this.comp.U, c = st.camera;
     C.before.value = st.flat.before ? 1 : 0; C.overlay.value = st.flat.overlay; C.gain.value = st.haze ? st.haze.gain : 0;
-    C.hazeOn.value = hazeOn ? 1 : 0; C.popsOn.value = final && opts.pops ? 1 : 0;
+    C.hazeOn.value = hazeOn ? 1 : 0; C.popsOn.value = final && opts.pops && show.pops ? 1 : 0;
     C.k.value = c.k; C.sq.value = c.squint; C.aspect.value = this.W / this.H;
     C.blur.value = this.quality === 'play' ? 1.0 / this.hazeRT.width : 0;
     r.setRenderTarget(null); this.comp.quad.render(r);
   }
 
   /** The haze for this frame: the screen's light grid, then the ray march into hazeRT (a fraction of the scene buffer). */
-  renderHaze(st) {
+  renderHaze(st) { this.prepHaze(st); this.marchSlice(0, 1); }
+
+  /** Band i of n of the haze ray march (n = 1: all of it). Bands are scissored and drawn without clearing. */
+  marchSlice(i, n) {
+    const r = this.renderer, rt = this.hazeRT, march = this.quality === 'play' ? this.haze.marchPlay : this.haze.march;
+    r.setRenderTarget(rt);
+    if (n === 1) { march.render(r); return; }
+    const y0 = Math.floor(rt.height * i / n), y1 = Math.floor(rt.height * (i + 1) / n), ac = r.autoClear;
+    rt.scissor.set(0, y0, rt.width, y1 - y0); r.autoClear = false; r.setScissorTest(true);
+    march.render(r);
+    r.setScissorTest(false); r.autoClear = ac;
+  }
+
+  /** Light grid and march uniforms for this frame, and hazeRT sized for the quality. */
+  prepHaze(st) {
     const r = this.renderer, H = this.haze.U, c = st.camera, gm = this.glassMap, R = st.ring, led = st.led, HZ = this.doc.look.haze;
     this.emitAvg.U.screenLight.value = HZ.screenLight ?? 100;
     r.setRenderTarget(this.emitHiRT); this.emitFlat.render(r);
@@ -209,7 +239,6 @@ export class ShotRenderer {
     H.stepLen.value = (HZ.stepLen ?? 0.015) * (play ? (PQ.stepScale ?? 3) : 1);
     const hw = Math.round(this.sceneRT.width * res), hh = Math.round(this.sceneRT.height * res);
     if (this.hazeRT.width !== hw || this.hazeRT.height !== hh) this.hazeRT.setSize(hw, hh);
-    r.setRenderTarget(this.hazeRT); (play ? this.haze.marchPlay : this.haze.march).render(r);
   }
 
   /** Mean luminance of this frame's lens-warped, ungained haze (call after render()). */
@@ -222,7 +251,7 @@ export class ShotRenderer {
     return s / (480 * 270) / this.haze.U.exposure.value;   // at exposure 1
   }
 
-  render3D(st) {
+  render3D(st, show = SHOW) {
     const { renderer: r, U, ix, post } = this, g = ix.glass, W_ = g.W, c = st.camera;
     this.chatTex.needsUpdate = true;
     // camera
@@ -245,20 +274,21 @@ export class ShotRenderer {
       const gh = st.ghosts[i], R_ = gh && this.ghostRects[gh.img];
       if (!R_) { S.ga.array[i] = 0; continue; }
       const h = gh.h || 0.5, w = h * R_.aspect * (g.H / g.W);
-      S.gr.array[i].set(...R_.r); S.gp.array[i].set(gh.x ?? .5, gh.y ?? .5, w, h); S.ga.array[i] = gh.level; S.gm.array[i] = gh.mirror === false ? 0 : 1;
+      S.gr.array[i].set(...R_.r); S.gp.array[i].set(gh.x ?? .5, gh.y ?? .5, w, h); S.ga.array[i] = show.ghosts ? gh.level : 0; S.gm.array[i] = gh.mirror === false ? 0 : 1;
     }
     // glows (in the glass plane)
     this.glows.forEach(m => { m.visible = false; });
-    const setGlow = (m, ctr, s, col, a) => { m.visible = true; m.matrix.set(g.r[0] * s, g.u[0] * s, g.n[0], ctr[0], g.r[1] * s, g.u[1] * s, g.n[1], ctr[1], g.r[2] * s, g.u[2] * s, g.n[2], ctr[2], 0, 0, 0, 1);
+    const setGlow = (m, ctr, s, col, a) => { m.visible = show.glows; m.matrix.set(g.r[0] * s, g.u[0] * s, g.n[0], ctr[0], g.r[1] * s, g.u[1] * s, g.n[1], ctr[1], g.r[2] * s, g.u[2] * s, g.n[2], ctr[2], 0, 0, 0, 1);
       m.material.userData.G.col.value.set(...col); m.material.userData.G.a.value = a; };
-    if (R && R.lvl > 0.01 && R.glow > 0) R.leds.forEach((p, i) => setGlow(this.glows[i], p, 0.007 * R.glow, R.col, R.lvl * 0.5));
-    if (led.intensity > 0) setGlow(this.glows[4], add(led.pos, scl(led.n, W_ * .006)), W_ * .03 * led.size, led.color, led.intensity * .6);
+    // the glows hide with their object in the viewport (the ring's with the remote, the power LED's with the model it sits on)
+    if (R && R.lvl > 0.01 && R.glow > 0 && this.ringNode?.visible !== false) R.leds.forEach((p, i) => setGlow(this.glows[i], p, 0.007 * R.glow, R.col, R.lvl * 0.5));
+    if (led.intensity > 0 && (!this.anyHidden || this.ledHost()?.visible !== false)) setGlow(this.glows[4], add(led.pos, scl(led.n, W_ * .006)), W_ * .03 * led.size, led.color, led.intensity * .6);
     // scene pass: the buffer grows with the lens overscan so the centre stays sharp
     const scale = c.k > 1e-4 ? Math.min(2, Math.ceil(c.ov * 2) / 2) : 1, sw = Math.round(this.W * scale), sh = Math.round(this.H * scale);
     if (this.sceneRT.width !== sw || this.sceneRT.height !== sh) this.sceneRT.setSize(sw, sh);
     r.setMRT(this.sceneMRT); r.setRenderTarget(this.sceneRT); r.clear(); r.render(this.scene, cam); r.setMRT(null);
     // lens + circle of confusion
-    const P = post.U, F = st.focus, D = !!(F && (F.px > 0 || F.edge > 0 || F.spot > 0));
+    const P = post.U, F = st.focus, D = !!(show.dof && F && (F.px > 0 || F.edge > 0 || F.spot > 0));
     P.k.value = c.k; P.aspect.value = this.W / this.H; P.sq.value = c.squint;
     P.fD.value = D ? F.D : 0; P.ppd.value = D ? F.px : 0; P.band.value = D ? F.band : 0; P.maxc.value = D ? F.max : 0; P.edge.value = D ? F.edge : 0; P.es.value = D ? F.es : 1;
     P.sp.value.set(D ? F.sp[0] : .5, D ? 1 - F.sp[1] : .5); P.spot.value = D ? F.spot : 0; P.spr.value = D ? F.spotR : 1; P.spf.value = D ? F.spotF : 1;
@@ -281,21 +311,30 @@ export class ShotRenderer {
 
   /** Render the scene from an editor camera (free view): the engine picture without lens warp, depth of field, haze
    *  or the flat layer, lit as after the reveal so it can be worked on before it. Helpers are drawn on top. */
-  renderFree(st, cam, helpers) {
+  renderFree(st, cam, helpers, show) {
     const r = this.renderer;
     const f = new THREE.Vector3(); cam.getWorldDirection(f);
     const eye = cam.position.toArray(), target = cam.position.clone().add(f).toArray(), up = cam.up.toArray();
     const fs = { ...st, cut: false, revealK: Math.max(st.revealK, 1), flat: { before: false, overlay: 0 }, focus: null, haze: null,
       led: { ...st.led, intensity: Math.max(st.led.intensity, 1) }, lighting: { ...st.lighting, ambient: Math.max(st.lighting.ambient, 0.3) },
       camera: { eye, target, up, fov: cam.fov, fovRender: cam.fov, k: 0, ov: 1, squint: 0, near: cam.near, far: cam.far } };
-    this.render(fs, { final: false, flat: false, pops: false, quality: 'render' });
+    this.render(fs, { final: false, flat: false, pops: false, quality: 'render', show });
     if (helpers) { const ac = r.autoClear; r.autoClear = false; r.setRenderTarget(null); r.render(helpers, cam); r.autoClear = ac; }
   }
 
-  /** The placed object under a canvas point (ndc -1..1), or null. */
+  /** The placed model whose bounds hold the power LED (null if none). */
+  ledHost() {
+    const p = v3(this.ix.obj.led.position), b = new THREE.Box3();
+    return Object.values(this.placed).find(n => b.setFromObject(n).expandByScalar(0.005).containsPoint(p)) || null;
+  }
+
+  /** Hide placed objects in the viewport (ids), show the rest. */
+  setHidden(ids) { for (const [id, node] of Object.entries(this.placed)) node.visible = !ids.has(id); this.anyHidden = ids.size > 0; }
+
+  /** The visible placed object under a canvas point (ndc -1..1), or null. */
   pick(ndc, cam) {
     const rc = new THREE.Raycaster(); rc.setFromCamera(new THREE.Vector2(ndc[0], ndc[1]), cam);
-    const hits = rc.intersectObjects(Object.values(this.placed), true);
+    const hits = rc.intersectObjects(Object.values(this.placed).filter(n => n.visible), true);
     for (const h of hits) { let n = h.object; while (n && !n.userData.docId) n = n.parent; if (n) return n.userData.docId; }
     return null;
   }
