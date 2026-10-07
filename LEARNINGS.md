@@ -606,6 +606,57 @@ load (three's `compileAsync` covers scene materials but not full-screen passes).
 - The default look is unchanged by all of this: frames 120/300/720/1100 are bit-identical to before the pixel look
   (PSNR infinite).
 
+## Spike: Camera kit (branch `spike-camera-kit`)
+
+Procedural handheld, gamepad takes recorded to keys, and shutter motion blur. All three are camera settings in the scene
+document, off by default; the default look is bit-identical (f300, f720: 0 differing pixels against `spike`). Frames and
+clips: `G:\Claude\Virtual Legacy\Channel\Virtual Shot spike\camera_kit\` (`take_sharp_vs_blur180.mp4`,
+`handheld_f720-840.mp4`, `take_tracks.json`, per-frame folders).
+
+**Handheld** (`src/core/handheld.js`, `cam.handheld = { on, amount, rot, roll, pos, freq, seed }`)
+- A pure function of (settings, t): two octaves of smooth value noise per channel (a slow sway for balance and
+  breathing, a faster jitter for the hands) turn the view about the eye (yaw, pitch, roll) and drift it a few mm. Applied
+  after the rig pose in `evaluate`, so focus, the frustum and renders all see it. Scrubbing is exact: f780 rendered
+  after jumping to f100 matches the sequence's f780 (0 differing pixels).
+- Inspector › Handheld: on/off, amount, sway, roll, drift, speed, seed. Defaults (0.6° sway, 0.35° roll, 4 mm drift,
+  0.7 Hz) read as a calm operator; this shot's slow pushes make even that obvious, so amount 0.3–0.5 may suit it.
+- Not keyed per time yet: `amount` would be a natural track (calm before the reveal, nervous at the stare).
+
+**Gamepad takes** (`src/editor/take.js`, Inspector › Gamepad take › Record take)
+- Plays the shot in real time and flies the rig from a standard gamepad (left stick pan, right stick yaw/pitch,
+  triggers dolly, bumpers zoom; dolly and zoom are geometric). Sticks drive rates, so the camera holds when released.
+  A stops and writes keys, B cancels. During the take the rig comes from `evaluate(..., over)`, an override the editor
+  passes, so the document is untouched until the end.
+- The take (one sample per shot frame) is thinned per property by `fitKeys` (`src/core/fit.js`): recursive splitting
+  at the worst sample (as Schneider's fitCubic), tangents from the samples, Bézier handles in the track format, and the
+  error measured with the time core's own `segVal`. A scripted 2.6 s take (153 frames, a synthetic gamepad in headless
+  Chrome) became **54 keys over 4 properties** (y 8, yaw 21, pitch 7, dist 18), every sample within tolerance (pan
+  0.002 glass widths, angles 0.05°, distance 0.004). A test signal of 240 samples fits in 13–33 keys at 0.02–0.002.
+- Writing is one undoable command (`cameraTake`): keys inside the take's range are replaced (punch-in), keys outside
+  are kept. The end of a take can jump back to the existing curve after it (as an overdub would); a blend-out on the
+  last half second would smooth that.
+- Not tested with a real pad (headless only). Phone gyro skipped: it needs HTTPS or a localhost tunnel from the phone
+  and a pairing step, more than a bounded round.
+
+**Shutter motion blur** (`cam.shutter = { on, angle, samples }`, Inspector › Shutter)
+- Sub-frame accumulation: N states evaluated at times spread over the open shutter (centred on the frame), each rendered
+  with the full look into an 8-bit target and averaged **in linear light** into a half-float buffer, then encoded to the
+  canvas (`ShotRenderer.shutterSteps`). Everything that moves blurs exactly (camera, rumbling remote, haze drift); it's
+  the ground truth a cheaper velocity-buffer blur should be compared with. The 2D layers are drawn once per frame.
+- Cost: N Render-quality frames. 8 samples at 180° took **1.19 s a frame** over 101 frames (2.1 s at f440 with heavy haze).
+- **Queuing N Render-quality frames in one task hung the GPU** (`DXGI_ERROR_DEVICE_HUNG`, the WebGPU device was lost, on
+  the first attempt; at 8 × ~130 ms of haze). The shutter now renders one sample per step and waits for
+  `onSubmittedWorkDone` between them (up to 2 s); renders to disk and the viewport's idle refine both use the async
+  path. Rule for the architecture: **never submit more than one heavy frame without yielding to the GPU**.
+- In this shot the blur is subtle at Black Page's own camera speed; it shows on the gamepad take's whip pans and on the
+  remote's rumble.
+
+**GPU notes:** the device loss above happened in an unlocked test that turned out heavy (my mistake); it overlapped the
+cel spike's first timing run, which that spike retook. The sequences (take, blur, handheld; 3 min) ran behind the lock.
+
+**Next:** `amount` as a keyable track, blend-out at take ends, a takes list (keep every take in the document and pick one,
+as Unreal's Take Recorder does), the per-object velocity blur compared against this accumulation, and a real gamepad test.
+
 ## Running the spike
 
 ```
