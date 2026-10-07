@@ -19,7 +19,7 @@ export function makeLightUniforms() {
 /** The engine's body shader: the CRT is the light (soft forward lobe, distance falloff), a bounce off the unseen room,
  *  the power LED's teal spill (and its texel glowing), emissive texture, the ringing remote's red light, and an
  *  override colour for the remote's LEDs. Unlit otherwise; no colour management (values are display-referred). */
-export function bodyMaterial(U, { map = null, emissiveMap = null, ledRect = [2, 2, 2, 2], ov = null, scMul = 1, blMul = 1, rawLed = false }) {
+export function bodyMaterial(U, { map = null, emissiveMap = null, ledRect = [2, 2, 2, 2], ov = null, scMul = 1, blMul = 1, rawLed = false, sh = null }) {
   const m = new THREE.MeshBasicNodeMaterial({ side: THREE.DoubleSide });
   const lr = vec4(...ledRect);
   m.outputNode = Fn(() => {
@@ -30,7 +30,14 @@ export function bodyMaterial(U, { map = null, emissiveMap = null, ledRect = [2, 
     const Lv = U.sp.sub(P), d = length(Lv), L = Lv.div(d);
     const lobe = clamp(dot(L.negate(), U.sn).mul(0.7).add(0.3), 0, 1);
     const face = max(dot(n, L).mul(0.85).add(0.15), 0).mul(lobe);
-    const spill = face.mul(U.si).div(d.mul(d).mul(5).add(1));
+    let spill = face.mul(U.si).div(d.mul(d).mul(5).add(1));
+    if (sh) {   // soft shadows from the screen (Show menu, off by default): mean visibility over the screen's patches
+      // The lookup point is a var declared before the If: a node first built inside an If is hoisted into a var that
+      // is only assigned when the branch runs, which broke the default (off) picture when P or L was reused there.
+      const sv = float(1).toVar(), xs = P.add(select(dot(n, L).lessThan(0), n.negate(), n).mul(0.003)).toVar();   // offset toward the light
+      If(sh.U.surface.greaterThan(0.5), () => { sv.assign(sh.nodes().screenVis(xs, { pcf: true })); });
+      spill = spill.mul(sv);
+    }
     const fill = U.amb.mul(float(0.5).add(max(dot(n, normalize(vec3(-0.4, 0.8, 0.3))), 0).mul(0.5)));
     const Lb0 = U.bp.sub(P), db = length(Lb0), Lb = Lb0.div(max(db, 1e-5));
     const bnc = U.bi.mul(max(dot(n, Lb), 0)).div(db.mul(db).mul(1.5).add(1));

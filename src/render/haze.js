@@ -4,8 +4,8 @@
 // Density: final look C "fine wisps" (Blender haze_mat.py): thin sheets around the 0.5 level set of a distorted 4D
 // fBm, broken up by a slower coverage noise. Lights: the CRT screen as a grid of area-light cells emitting 100x the
 // screen image (linear), the ringing remote's red point light, the LED's teal spill. Henyey-Greenstein phase, g 0.3.
-// Not modelled: shadowing by geometry and attenuation along light paths (the haze is thin; light rays mostly cross
-// clear air).
+// Not modelled: attenuation along light paths (the haze is thin; light rays mostly cross clear air). Shadowing of the
+// screen's light by geometry (light shafts) is optional, from the screen shadow maps in shadows.js.
 import * as THREE from 'three/webgpu';
 import { Fn, uniform, texture, uv, vec2, vec3, vec4, float, int, uint, max, min, dot, normalize, length, exp, abs, pow, sqrt, mix,
   smoothstep, select, Loop, If, Break, screenCoordinate } from 'three/tsl';
@@ -13,7 +13,7 @@ import { noiseTex4, fbm4 } from './cycles_noise.js';
 
 const quadMat = node => { const m = new THREE.NodeMaterial(); m.fragmentNode = node; m.depthTest = false; m.depthWrite = false; return m; };
 
-export function makeHaze({ distTex, emitTex, look }) {
+export function makeHaze({ distTex, emitTex, look, shadows = null }) {
   const H = look;   // doc.look.haze
   const U = {
     eye: uniform(new THREE.Vector3()), cr: uniform(new THREE.Vector3()), cu: uniform(new THREE.Vector3()), cf: uniform(new THREE.Vector3()),
@@ -48,6 +48,13 @@ export function makeHaze({ distTex, emitTex, look }) {
   const inscatter = Fn(([x, vd]) => {
     const acc = vec3(0).toVar();
     const dA = length(U.geu.cross(U.gev)).div(GX * GY);
+    // light shafts (Show menu, off by default): each cell's light is scaled by its screen patch's visibility from x
+    const SH = shadows, vis = [];
+    if (SH) {
+      const { patchVis } = SH.nodes();
+      for (let k = 0; k < SH.KX * SH.KY; k++) vis.push(float(1).toVar());
+      If(SH.U.shafts.greaterThan(0.5), () => { for (let k = 0; k < vis.length; k++) vis[k].assign(patchVis(x, k % SH.KX, Math.floor(k / SH.KX))); });
+    }
     for (let j = 0; j < GY; j++) for (let i = 0; i < GX; i++) {
       const su = (i + 0.5) / GX, sv = (j + 0.5) / GY;
       const p = U.g00.add(U.geu.mul(su)).add(U.gev.mul(sv));
@@ -55,7 +62,8 @@ export function makeHaze({ distTex, emitTex, look }) {
       const cosE = max(dot(U.gn, dl), 0);
       const d2s = d2.add(dA.mul(0.25));   // soften the cell's 1/d^2 for points nearer the glass than the cell size
       const Le = emitNode.sample(vec2(su, sv)).level(0).rgb;   // linear emission already scaled
-      acc.addAssign(Le.mul(cosE.mul(dA).div(d2s).mul(hg(dot(dl, vd)))));
+      const c = Le.mul(cosE.mul(dA).div(d2s).mul(hg(dot(dl, vd))));
+      if (SH) { const [pi, pj] = SH.patchOf(i, j, GX, GY); acc.addAssign(c.mul(vis[pj * SH.KX + pi])); } else acc.addAssign(c);
     }
     for (const [P, I] of [[U.ringPos, U.ringI], [U.ledPos, U.ledI]]) {
       const dv = x.sub(P), d2 = max(dot(dv, dv), 1e-6), dl = dv.div(sqrt(d2));

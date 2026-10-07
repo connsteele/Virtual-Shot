@@ -4,7 +4,7 @@ import { evaluate, indexDoc } from '../core/evaluate.js';
 import { createCommandStack } from '../core/commands.js';
 import { ChatLayer } from '../layers/chat2d.js';
 import { PopsLayer } from '../layers/pops2d.js';
-import { ShotRenderer, assetUrl, SHOW } from '../render/shot_renderer.js';
+import { ShotRenderer, assetUrl, SHOW, SHADOW_KEYS } from '../render/shot_renderer.js';
 import { Outliner } from './outliner.js';
 import { Inspector } from './inspector.js';
 import { Viewport } from './viewport.js';
@@ -99,7 +99,7 @@ async function boot() {
       perf.time(chatUp ? 'three: encode + upload chat' : 'three: encode', () => shot.renderFree(st, viewport.freeCam, helpers, E.show, { chat: chatUp }));
     } else {
       E.layerOpts = layerOpts(st); const u = E.layerOpts.upload, ups = ['chat', 'flat', 'pops'].filter(k => u[k] && (k === 'chat' || E.layerOpts[k]));
-      perf.time(ups.length ? `three: encode + upload ${ups.join(', ')}` : 'three: encode', () => shot.render(st, { ...E.layerOpts, quality, show: output ? undefined : E.show }));
+      perf.time(ups.length ? `three: encode + upload ${ups.join(', ')}` : 'three: encode', () => shot.render(st, { ...E.layerOpts, quality, show: output ? Object.fromEntries(SHADOW_KEYS.map(k => [k, !!E.show[k]])) : E.show }));
     }
     E.quality = quality; perf.time('overlay', () => viewport.overlay(st));
     $('timecode').textContent = E.timecode(E.frame); $('frameNo').textContent = `f ${E.frame} · ${t.toFixed(3)} s`;

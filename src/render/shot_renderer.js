@@ -6,6 +6,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { bodyMaterial, crtMaterial, glowMaterial, makeLightUniforms } from './materials.js';
 import { makePost } from './post.js';
 import { makeHaze } from './haze.js';
+import { makeScreenShadows } from './shadows.js';
 import { makeComposite, makeHazeMeter, makeEmitAverage, flatScreenQuad } from './final_comp.js';
 import { indexDoc } from '../core/evaluate.js';
 import { add, scl, xf, nrm, trsOf } from '../core/vec.js';
@@ -21,7 +22,9 @@ export const assetUrl = ref => {
 // ImageBitmap, not <img>.decode(): decode() never settles while the tab is hidden, and renders run in background tabs.
 const loadImage = async src => createImageBitmap(await (await fetch(src)).blob(), { premultiplyAlpha: 'none', colorSpaceConversion: 'none' });
 /** Parts of the look the editor can turn off in its viewport (all on for renders). */
-export const SHOW = { haze: true, dof: true, lens: true, glows: true, ghosts: true, pops: true };
+export const SHOW = { haze: true, dof: true, lens: true, glows: true, ghosts: true, pops: true, shafts: false, softShadows: false };
+/** The shadow toggles (research): off by default; renders to disk follow the viewport's choice. */
+export const SHADOW_KEYS = ['shafts', 'softShadows'];
 const m4 = a => new THREE.Matrix4().fromArray(Array.from(a));
 const v3 = a => new THREE.Vector3(...a);
 
@@ -69,6 +72,7 @@ export class ShotRenderer {
       const bin = Uint8Array.from(atob((await (await fetch(url)).text()).trim()), c => c.charCodeAt(0));
       return loader.parseAsync(bin.buffer, '');
     };
+    const sh = this.shadows = makeScreenShadows(doc.look.shadows);
     const ledRect = ix.obj.led.texelRect, ledTargets = new Set(ix.obj.led.appliesTo || []);
     this.ledParts = []; this.placed = {};
     for (const o of doc.objects) {
@@ -92,7 +96,7 @@ export class ShotRenderer {
         if (isScreen) {
           const uvA = geom.attributes.uv; let u0 = [1e9, 1e9], u1 = [-1e9, -1e9];
           for (let i = 0; i < uvA.count; i++) { u0 = [Math.min(u0[0], uvA.getX(i)), Math.min(u0[1], uvA.getY(i))]; u1 = [Math.max(u1[0], uvA.getX(i)), Math.max(u1[1], uvA.getY(i))]; }
-          mesh.material = this.crt = crtMaterial({ chatTex, ghostTex, ub: [...u0, ...u1] });
+          mesh.material = this.crt = crtMaterial({ chatTex, ghostTex, ub: [...u0, ...u1] }); this.crtMesh = mesh;
           this.screenUB = [...u0, ...u1];
           // glass uv -> world (least squares over the primitive's vertices): where each part of the image emits from
           const n = pos.count, Mw = mesh.matrixWorld; let S11 = 0, Su = 0, Sv = 0, Suu = 0, Suv = 0, Svv = 0; const R = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
@@ -107,7 +111,7 @@ export class ShotRenderer {
         }
         const isLed = ledRe && ledRe.test(nodeName);
         const ov = isLed ? uniform(new THREE.Vector4(0, 0, 0, 0)) : null;
-        mesh.material = bodyMaterial(U, { map: src.map, emissiveMap: src.emissiveMap, ledRect: ledTargets.has(o.id) ? ledRect : [2, 2, 2, 2], ov });
+        mesh.material = bodyMaterial(U, { map: src.map, emissiveMap: src.emissiveMap, ledRect: ledTargets.has(o.id) ? ledRect : [2, 2, 2, 2], ov, sh });
         if (isLed) this.ledParts.push({ mesh, ov, c0: a0.map((v, c) => (v + a1[c]) / 2) });
       }
       const M = Array.from(root.matrix.elements), ctrLocal = mn.map((v, c) => (v + mx[c]) / 2);
@@ -126,7 +130,7 @@ export class ShotRenderer {
     for (const o of doc.objects.filter(o => o.type === 'card')) {
       const im = await loadImage(assetUrl(doc.assets[o.texture])), tx = new THREE.Texture(im);
       Object.assign(tx, { flipY: false, generateMipmaps: false, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, colorSpace: THREE.NoColorSpace, needsUpdate: true });
-      const mesh = new THREE.Mesh(quad, bodyMaterial(U, { map: tx, scMul: 1.15, blMul: o.brightness || 1.4, rawLed: true }));
+      const mesh = new THREE.Mesh(quad, bodyMaterial(U, { map: tx, scMul: 1.15, blMul: o.brightness || 1.4, rawLed: true, sh }));
       mesh.matrixAutoUpdate = false; mesh.matrix.copy(m4(trsOf(o.transform))); mesh.userData.docId = o.id; this.placed[o.id] = mesh; scene.add(mesh);
     }
     // glows: four for the ringing LEDs, one for the power LED
@@ -160,7 +164,7 @@ export class ShotRenderer {
       this.emitFlat = flatScreenQuad(Fn(() => crtColor(vec2(ub[0], ub[1]).add(uv().mul(vec2(ub[2] - ub[0], ub[3] - ub[1])))))());
       this.emitAvg = makeEmitAverage({ hiTex: this.emitHiRT.texture, gx, gy });
       this.emitAvg.U.screenLight.value = HZ.screenLight ?? 100;
-      this.haze = makeHaze({ distTex: this.sceneRT.textures[1], emitTex: this.emitRT.texture, look: HZ });
+      this.haze = makeHaze({ distTex: this.sceneRT.textures[1], emitTex: this.emitRT.texture, look: HZ, shadows: this.shadows });
       this.meterRT = rt(480, 270, { type: THREE.FloatType });
       this.meter = makeHazeMeter({ hazeTex: this.hazeRT.texture });
     }
@@ -285,6 +289,9 @@ export class ShotRenderer {
     // the glows hide with their object in the viewport (the ring's with the remote, the power LED's with the model it sits on)
     if (R && R.lvl > 0.01 && R.glow > 0 && this.ringNode?.visible !== false) R.leds.forEach((p, i) => setGlow(this.glows[i], p, 0.007 * R.glow, R.col, R.lvl * 0.5));
     if (led.intensity > 0 && (!this.anyHidden || this.ledHost()?.visible !== false)) setGlow(this.glows[4], add(led.pos, scl(led.n, W_ * .006)), W_ * .03 * led.size, led.color, led.intensity * .6);
+    // screen shadow maps, when a shadow toggle is on (redrawn only when something that casts has moved)
+    const SH = this.shadows; SH.U.shafts.value = show.shafts ? 1 : 0; SH.U.surface.value = show.softShadows ? 1 : 0;
+    if (show.shafts || show.softShadows) SH.update(r, this.scene, { gm: this.glassMap, n: g.n, hide: [this.crtMesh, ...this.glows], casters: Object.values(this.placed), mark: n => this.mark(n) });
     // scene pass: the buffer grows with the lens overscan so the centre stays sharp
     const scale = c.k > 1e-4 ? Math.min(2, Math.ceil(c.ov * 2) / 2) : 1, sw = Math.round(this.W * scale), sh = Math.round(this.H * scale);
     if (this.sceneRT.width !== sw || this.sceneRT.height !== sh) this.sceneRT.setSize(sw, sh);
