@@ -747,6 +747,76 @@ load (three's `compileAsync` covers scene materials but not full-screen passes).
   - `mark()`: GPU timing
 - **Other looks** (watercolour, ink) could plug into the same points.
 
+### Research pass (7 Oct, overnight)
+
+**What was added** (all off by default; `CEL_LOOK` keeps its old values, so the build's look is unchanged):
+- `lineStage`: `'scene'` (as built, before the lens), `'post'` (a lines-only pass alpha-blended onto `finalRT` after depth
+  of field) or `'final'` (blended onto the composite's output, after the haze). The overlay maps each output pixel back into
+  the G-buffer through the lens warp, so the lines sit on the warped picture; it reads `lensRT` for the line tint, and
+  in `'final'` it is masked by the pops layer's alpha so lines never draw over the 2D text.
+- `lineCoc`: in the post/final stages, lines fade out where |CoC| passes this many px (1080p), so only in-focus things are lined.
+- `flat` / `flatR`: albedo mixed toward a 9-tap average (radius in uv), to flatten the PSX textures' baked shading.
+- `spec` / `specT`: a hard anime specular from the key light (N·H smoothstep).
+- Lookdev: a test bust (jaw-tapered head, nose, ears, eye discs, hair cap and fringe, neck, shoulders; head parts in the
+  face-shadow mode), four more props (barrel, crate, pistol, shotgun), a sky-blue backdrop (`?bg=black` for the old one),
+  `bust` and `props` views, `?props=few`.
+
+**Reference comparison** (from published talks and docs; no images copied):
+| Reference | What it does | Matches here | Missing / different |
+|---|---|---|---|
+| Jet Set Radio (2000) | Thick black inverted-hull outlines (thicker on stand-out objects), interior contour lines, hard 2-tone, flat saturated colour | Thick lines (5 px) + 2 hard tones read closest to JSR (`lookdev_presets.jpg` p2) | Per-object line weight; flat painted textures (ours are photo-ish PSX atlases) |
+| Wind Waker (2002) | No outlines; diffuse N·L multiplied up and clamped (a hard but not stepped edge), flat textures, bright palette | `lines:false`, 2 tones, soft 0.025, flat albedo (p3) | WW's colour comes from the textures/palette; our textures stay grimy |
+| Guilty Gear Xrd (GDC 2015, ASW toon-line doc) | Inverted hull; line width per vertex (vertex colour alpha), scaled by camera distance and FOV; depth offset (vertex colour B) hides inner hull lines; separate normals for outlines vs lighting; inner lines painted into textures; hand-edited normals and per-texel shadow thresholds for designed shadows | 2 hard tones, tinted lines, hard spec (p4) | Per-vertex width and per-texel threshold control: a screen-space G-buffer line can't be art-directed per vertex; ours is constant width in px |
+| Genshin Impact | Ramp textures per material (day/night), SDF face-shadow map, coloured (not black) outlines, even-width screen-space rim on both sides, soft-ish tone edges, bloom | Ramp (3 tones), SDF-style face term, tinted lines, depth-offset rim, spec (p5); the face sweep (`lookdev_spec_face.jpg`) behaves like Genshin's: the terminator slides across the face, the cheek under the nose stays lit at 90° | Ramp *textures* (we have 3 colours), per-material ramps, bloom |
+| Anime films (colour-trace lines) | Lines are often coloured (shadow-side lines in the shadow hue; highlight lines lighter), night scenes keep readable lines that are not black; backgrounds are painted without line art | Light/coloured lines after the haze (`shot_line_colour_sweep_*`), `lineCoc` (lines only on the focused subject) | Two line colours by side (shadow vs lit) |
+
+**Findings.**
+1. **Where the lines are drawn decides whether the dark shot reads.** Drawn before the lens (as built), depth of field
+   and haze turn everything but the remote into mush. After depth of field (`'post'`) the desk, keyboard and mouse pad get
+   clean outlines; after the haze (`'final'`) they also stay crisp through the smoke (`shot_stage_sweep_f00720.jpg`, c/d).
+   Cost: one extra full-screen pass (numbers below).
+2. **Light lines are what make the dark shot read as anime.** Dark lines on dark plastic stay invisible at any width;
+   warm light lines (`lineCol [0.95,0.78,0.7]`, tint 0) after the haze turn f720 into a clear line drawing over the
+   CRT-lit plastic, and `[0.6,0.45,0.42]` is a quieter middle ground (`shot_line_colour_sweep_*`, f2/i). This is the
+   anime-film "colour trace" idea: lines that are not black in a night scene.
+3. **`lineCoc` gives the anime split of a lined subject over an unlined background** (k_light_coc: remote and mouse pad
+   lined, the blurred desk and monitor not). 8 px at 1080p removed nearly everything in f720; 14 px is about right.
+4. **A brighter shadow tone barely changes the dark shot**: the shot is lit by the CRT alone and ambient is tiny, so
+   shadow/mid colours and fill lift move little (g vs d); raising `gain` to 1.4 brightens the lit plastic (l_lift) but
+   the dark areas stay dark. The darkness is the lighting, not the ramp; lines are the lever.
+5. **Flat albedo and spec are lookdev-only wins for now.** On the lookdev, `flat 0.5, flatR 0.006` removes grain but
+   keeps keys and labels; `flatR 0.02` smears the keyboard's keys (atlas islands bleed into each other). In the shot a
+   hard spec with `specT 0.9` throws big pink sheets over the keyboard (m_flat_spec); use `specT ≥ 0.97`.
+6. **Line width:** 1 px faint, 2 px default, 3 px anime at 1080p, 5 px JSR, 8 px poster (lines eat small props).
+   Crease 50° stays right (30° adds ring lines on the monitor stand, 70° drops the bezel).
+7. **A rim-light bug shows on the lookdev's ground plane:** where the floor meets the sky at the horizon, the depth-offset
+   rim lights a bright band (p5/p6 and `check.jpg`), because the step lands on the background. Exclude the background from
+   the rim, or require the far side to be another object.
+
+**What it would take to match the references properly:** per-object (better, per-vertex) line weight and colour;
+ramp textures per material; a second line colour by side (shadow/lit); a designed face-shadow SDF texture per character
+(the procedural one is a stand-in); flat or palette albedo per asset (PSX textures fight the look); bloom for Genshin-style
+glow (the chunky-pixel Wii bloom could be reused).
+
+**Recommendations for the real build.**
+- Make `lineStage: 'final'` the cel preset's default, with `lineCoc ≈ 14`; keep `'scene'` for looks that want lines
+  blurred with the picture.
+- Expose line colour as a first-class preset parameter, with a "night" preset using light lines (`[0.6,0.45,0.42]`).
+- Fix the rim at the horizon before shipping.
+- Leave flat albedo and spec off in the Black Page preset; offer them per asset.
+
+**Open questions for Connor:** light lines in the dark shot (anime night look) or keep it dark with lines only on the
+focused subject? Should 2D pops sit over the lines (as now) or under them?
+
+**Frames and sheets:** `G:\Claude\Virtual Legacy\Channel\Virtual Shot spike\cel_look\research\`
+- `sheets\shot_stage_sweep_f00420/f00720/f01000.jpg` (off, scene, post, final, final+CoC, light lines, brighter shadow tone, combined)
+- `sheets\shot_line_colour_sweep_f*.jpg` (light, mid, light silhouettes only, light+CoC, lift, flat+spec, mid 3 px, dark post 3 px)
+- `sheets\lookdev_presets.jpg` (lambert vs default, JSR, Wind Waker, GG Xrd, Genshin, film-style presets × wide/close/bust)
+- `sheets\lookdev_line_width.jpg`, `lookdev_tones.jpg`, `lookdev_crease_flat.jpg`, `lookdev_spec_face.jpg`
+- `shot\<variant>\f*.png`, `lookdev\...` full-size; `bitcheck_off\` (identity check: f300, f720 = 0 differing pixels vs `baseline_spike`)
+
+TIMING_PLACEHOLDER
+
 ## Running the spike
 
 ```

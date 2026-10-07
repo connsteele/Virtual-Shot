@@ -186,7 +186,7 @@ const quadMat = node => { const m = new THREE.NodeMaterial(); m.fragmentNode = n
  *  field, or after the haze composite), so the lines stay sharp. Then `warp` (uniforms k, aspect: the lens) maps the
  *  output uv back into the G-buffer (which is in the scene buffer's pre-lens space), `colorTex` is only used for the
  *  line tint (the lens buffer), and `cocTex` (signed CoC px) can fade lines on out-of-focus surfaces. */
-export function makeCelLines({ colorTex, gTex, overlay = false, warp = null, cocTex = null }) {
+export function makeCelLines({ colorTex, gTex, overlay = false, warp = null, cocTex = null, maskTex = null, maskOn = null }) {
   const U = { px: uniform(new THREE.Vector2(1 / 1920, 1 / 1080)), R: uniform(1), thin: uniform(1), col: uniform(new THREE.Vector3()), tint: uniform(0),
     sil: uniform(1), crease: uniform(1), mat: uniform(1), depthRel: uniform(0.02), creaseCos: uniform(0.64),
     fadeNear: uniform(8), fadeFar: uniform(30), on: uniform(1), debug: uniform(0), cocLo: uniform(1e3), cocHi: uniform(2e3) };
@@ -223,7 +223,9 @@ export function makeCelLines({ colorTex, gTex, overlay = false, warp = null, coc
     // a silhouette against the background is drawn even far away; everything else fades with distance
     const a0 = max(max(cover(dS).mul(U.sil), cover(dC).mul(U.crease).mul(fade)), cover(dM).mul(U.mat).mul(fade)).mul(U.thin).mul(U.on);
     // optional: no lines on surfaces out of focus (anime backgrounds carry no line art)
-    const a = cocT ? a0.mul(float(1).sub(smoothstep(U.cocLo, U.cocHi, abs(cocT.sample(q).level(0).r)))) : a0;
+    const a1 = cocT ? a0.mul(float(1).sub(smoothstep(U.cocLo, U.cocHi, abs(cocT.sample(q).level(0).r)))) : a0;
+    // after the composite, keep the lines under the 2D pops (their alpha masks the lines out)
+    const a = maskTex ? a1.mul(float(1).sub(texture(maskTex).sample(q).level(0).a.mul(maskOn))) : a1;
     const lc = mix(U.col, c.rgb.mul(0.3), U.tint);
     if (overlay) return select(U.debug.lessThan(0.5), vec4(lc, a), vec4(vec3(0), a));
     const out = vec4(mix(c.rgb, lc, a), c.a);
@@ -294,7 +296,8 @@ export class CelLook {
   /** The overlay lines, alpha-blended onto target (finalRT after depth of field, or the composite's target). */
   overlay(r, w, h, target) {
     const shot = this.shot;
-    if (!this.over) this.over = makeCelLines({ colorTex: shot.lensRT.texture, gTex: this.gbuf.rt.texture, overlay: true, warp: shot.post.U, cocTex: shot.cocRT.texture });
+    if (!this.over) this.over = makeCelLines({ colorTex: shot.lensRT.texture, gTex: this.gbuf.rt.texture, overlay: true, warp: shot.post.U, cocTex: shot.cocRT.texture,
+      maskTex: shot.popsTex, maskOn: shot.comp.U.popsOn });
     applyLineUniforms(this.over.U, this.look, { sceneH: shot.H, outH: shot.OH });
     this.over.U.px.value.set(1 / w, 1 / h);
     shot.mark('cel lines (' + this.stage + ')');
