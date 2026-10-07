@@ -550,6 +550,18 @@ more) although the shot is 60 fps, so it drew most frames two or three times. It
 changes, which cuts playback GPU load by more than half on a high-refresh monitor. Lesson for the doc: the player
 should be clocked by the shot's frame rate, not the display's.
 
+**Frame-rate cap and V-Sync.** The viewport header has a frame-rate cap per view (Display, 120, 60, 30, 24, 15; camera
+and free view keep their own). A page can't turn V-Sync off: the browser draws on the display's refresh through the
+desktop compositor, so the driver's V-Sync setting doesn't apply to it and there is no tearing or conflict. A cap
+below the refresh rate spaces frames on refresh boundaries, averaging the cap. Playback keeps real time under a cap
+(skipping shot frames on purpose, not counted as dropped).
+
+**First-use shader compiles.** In a fresh browser profile the first playback froze for about 9 s while Chrome compiled
+the pipelines in the background (the haze march with the Cycles noise port is the big one). The editor now renders a
+few frames at both qualities while loading and waits for the GPU, so the wait happens behind "Preparing shaders…"
+at load. Chrome caches compiled shaders, so later loads are quick. The architecture should precompile its pipelines at
+load (three's `compileAsync` covers scene materials but not full-screen passes).
+
 ## Running the spike
 
 ```

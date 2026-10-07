@@ -117,10 +117,11 @@ export class Viewport {
     pop.addEventListener('beforetoggle', e => { if (e.newState !== 'open') return; const r = btn.getBoundingClientRect();
       pop.style.left = `${Math.min(r.left, innerWidth - 300)}px`; pop.style.top = `${r.bottom + 4}px`; });
     sel.onchange = () => E.setRefine(sel.value);
+    const fps = document.getElementById('fpsSel'); fps.onchange = () => E.setFpsCap(+fps.value); E.on('view', () => { fps.value = String(E.fpsCap[E.view] || 0); });
     const sync = () => {
       pop.querySelectorAll('[data-show]').forEach(i => { i.checked = !!E.show[i.dataset.show]; });
       const off = ['haze', 'dof', 'lens', 'glows', 'ghosts', 'pops'].filter(k => !E.show[k]).length;
-      btn.textContent = off ? `Show (${off} off) ▾` : 'Show ▾'; sel.value = E.refineMode;
+      btn.textContent = off ? `Show (${off} off) ▾` : 'Show ▾'; sel.value = E.refineMode; fps.value = String(E.fpsCap[E.view] || 0);
       const n = E.hidden.size, h = document.getElementById('hiddenNote');
       h.textContent = n ? `${n} hidden · Alt+H reveals` : ''; pop.querySelector('#revealAll').disabled = !n;
     };

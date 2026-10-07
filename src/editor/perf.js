@@ -76,8 +76,8 @@ export class Perf {
     this.resolve(); this.drawSoon();
   }
   /** Playback: the frame the clock asked for vs the one before, so skipped frames are counted. */
-  playTick(f, prev) { if (!this.active) return; if (!this.play) this.note('playback'); const p = this.play ||= { frames: 0, dropped: 0, t0: performance.now() };
-    p.frames++; if (prev != null && f > prev + 1) p.dropped += f - prev - 1; }
+  playTick(f, prev, step = 1) { if (!this.active) return; if (!this.play) this.note('playback'); const p = this.play ||= { frames: 0, dropped: 0, t0: performance.now() };
+    p.frames++; if (prev != null && f > prev + step) p.dropped += f - prev - step; }
 
   async resolve() {
     if (this.resolving) return; this.resolving = true;

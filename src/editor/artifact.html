@@ -30,6 +30,8 @@
       <button type="button" id="showBtn" popovertarget="showMenu" aria-haspopup="true" aria-expanded="false" title="Turn parts of the look and the overlays on or off">Show ▾</button>
       <label class="vp-q">Quality <select id="refineSel" aria-label="Viewport quality">
         <option value="idle">Refine when idle</option><option value="off">Play quality only</option></select></label>
+      <label class="vp-q" title="Cap how often this view redraws (camera and free view each keep their own setting). The browser always syncs to the display, so a cap below its refresh rate spaces frames on refresh boundaries.">Frame rate <select id="fpsSel" aria-label="Viewport frame rate cap">
+        <option value="0">Display (V-Sync)</option><option value="120">120</option><option value="60">60</option><option value="30">30</option><option value="24">24</option><option value="15">15</option></select></label>
       <button type="button" id="statsBtn" aria-pressed="false" title="Frames per second and render timings (CPU and GPU per pass)">Stats</button>
       <span class="spacer"></span><span id="hiddenNote" class="muted"></span>
     </div>

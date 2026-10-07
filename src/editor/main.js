@@ -56,15 +56,16 @@ async function boot() {
 
   // ---- viewport visibility (Blender's eye toggles and overlays, Unreal's Show menu): editor-only, kept in this browser
   E.show = { ...SHOW, safe: true, grid: true, frustum: true, hazeBox: true, lights: true, bounds: true };
-  E.hidden = new Set(); E.refineMode = 'idle';
+  E.hidden = new Set(); E.refineMode = 'idle'; E.fpsCap = { camera: 0, free: 0 };   // 0 = the display's rate
   const viewKey = 'vs-editor-view:' + doc.name;
   try { const v = JSON.parse(localStorage.getItem(viewKey) || 'null');
-    if (v) { Object.assign(E.show, v.show); E.hidden = new Set(v.hidden || []); E.refineMode = v.refine || 'idle'; E.statsOn = !!v.stats; } } catch { /* storage may be blocked */ }
-  const keepView = () => { try { localStorage.setItem(viewKey, JSON.stringify({ show: E.show, hidden: [...E.hidden], refine: E.refineMode, stats: !!E.statsOn })); } catch { /* storage may be blocked */ } };
+    if (v) { Object.assign(E.show, v.show); E.hidden = new Set(v.hidden || []); E.refineMode = v.refine || 'idle'; E.statsOn = !!v.stats; Object.assign(E.fpsCap, v.fps); } } catch { /* storage may be blocked */ }
+  const keepView = () => { try { localStorage.setItem(viewKey, JSON.stringify({ show: E.show, hidden: [...E.hidden], refine: E.refineMode, stats: !!E.statsOn, fps: E.fpsCap })); } catch { /* storage may be blocked */ } };
   E.keepView = keepView;
   E.setShow = (k, on) => { E.show[k] = on; keepView(); E.emit('show'); E.requestRender(); };
   E.setHidden = (id, hide) => { hide ? E.hidden.add(id) : E.hidden.delete(id); keepView(); E.emit('show'); E.requestRender(); };
   E.revealAll = () => { E.hidden.clear(); keepView(); E.emit('show'); E.requestRender(); };
+  E.setFpsCap = n => { E.fpsCap[E.view] = n; keepView(); E.emit('show'); };
   E.setRefine = m => { E.refineMode = m; keepView(); E.emit('show'); E.requestRender(); };
 
   // ---- rendering: every change draws at Play quality straight away (~15 ms); once things stop, the camera view
@@ -122,11 +123,16 @@ async function boot() {
     }
     refineJob = null; E.quality = 'render'; hud('Render quality');
   };
+  // frame-rate cap per view (0 = every display refresh): frames are spaced 1/cap apart on average, on refresh boundaries
+  let nextAt = 0;
+  const gate = now => { const cap = E.fpsCap[E.view] || 0; if (!cap) return true; const iv = 1000 / cap;
+    if (now + 1 < nextAt) return false; nextAt = now - nextAt > iv ? now + iv : nextAt + iv; return true; };
   E.requestRender = () => {
     refineJob = null; clearTimeout(idleTimer);
     if (pending) return; pending = true;
-    requestAnimationFrame(() => { pending = false; E.renderNow('play');
-      if (!E.playing && !E.interacting) idleTimer = setTimeout(refine, 250); });
+    const draw = now => { if (!gate(now)) { requestAnimationFrame(draw); return; }
+      pending = false; E.renderNow('play'); if (!E.playing && !E.interacting) idleTimer = setTimeout(refine, 250); };
+    requestAnimationFrame(draw);
   };
   E.setFrame = f => { E.frame = Math.max(0, Math.min(E.last, Math.round(f))); E.requestRender(); };
   E.select = sel => { E.sel = sel; E.emit('select', sel); E.requestRender(); };
@@ -140,7 +146,9 @@ async function boot() {
   const loop = now => { if (!E.playing) return; const f = f0 + Math.floor((now - t0) / 1000 * E.fps);
     if (f > E.last) { E.playing = false; $('playBtn').textContent = 'Play'; E.frame = E.last; E.requestRender(); return; }
     // a 120-165 Hz monitor asks for 2-3 animation frames per shot frame: draw only when the shot frame changes
-    if (f !== E.frame) { perf.playTick(f, E.frame); E.frame = f; E.renderNow('play'); } requestAnimationFrame(loop); };
+    // with a cap, frames are skipped on purpose (time stays real), and only skips beyond that count as dropped
+    if (f !== E.frame && gate(now)) { const cap = E.fpsCap[E.view]; perf.playTick(f, E.frame, cap ? Math.max(1, Math.round(E.fps / cap)) : 1); E.frame = f; E.renderNow('play'); }
+    requestAnimationFrame(loop); };
   E.togglePlay = () => { perf.note(E.playing ? 'pause' : 'play'); if (E.playing) { E.playing = false; $('playBtn').textContent = 'Play'; E.requestRender(); return; }
     if (E.frame >= E.last) E.frame = 0; E.playing = true; t0 = performance.now(); f0 = E.frame; $('playBtn').textContent = 'Pause'; requestAnimationFrame(loop); };
   const keyTimes = () => [...new Set(E.doc.tracks.flatMap(tr => tr.keys.map(k => Math.round(k.t * E.fps))))].sort((a, b) => a - b);
@@ -208,6 +216,13 @@ async function boot() {
     E.emit('key', e);
   });
   window.addEventListener('resize', () => E.emit('resize'));
+  // compile every pipeline before the first frame: otherwise the first playback stalls while shaders compile
+  // (9 s in a fresh headless profile; Chrome caches compiled shaders, so later loads are quick)
+  { const f = E.frame; $('status').textContent = 'Preparing shaders…';
+    for (const w of [120, 300, 720, 1100]) for (const q of ['play', 'render']) { E.frame = Math.min(w, E.last); E.renderNow(q, { output: true }); }
+    // Chrome compiles in the background: wait for the GPU here (load) rather than on the first frame of playback
+    if (shot.backend === 'WebGPU') await Promise.race([shot.renderer.backend.device.queue.onSubmittedWorkDone(), new Promise(r => setTimeout(r, 20000))]);
+    E.frame = f; E.layersChanged(); $('status').textContent = ''; }
   E.emit('change', 'boot'); E.emit('select', E.sel); E.emit('show'); E.renderNow('render'); E.quality = 'render';
   window.VS_READY = true;
 }
