@@ -606,6 +606,98 @@ load (three's `compileAsync` covers scene materials but not full-screen passes).
 - The default look is unchanged by all of this: frames 120/300/720/1100 are bit-identical to before the pixel look
   (PSNR infinite).
 
+## Spike: GPU particles (branch `spike-particles`)
+
+**What it is.** Deterministic, time-driven GPU particles in TSL, and one showcase effect: an anime-style spell burst
+from the Wii Remote (three shockwave rings, spiral sparks on alternating cyan and violet arms, a glowing core with a
+flash, rising pink embers), additive, colour over life. 116k particles by default, measured up to 1.86M.
+
+- **Pure function of time.** Every particle's state is computed in the vertex shader from (instance index, the event's
+  seed, its parameters, age = t - event.t): birth time from the index (front-loaded `pow(h, 1.6)` for the sparks, a few
+  delays for the rings), PCG-hashed (`hash(instanceIndex + salt)`) direction, life, size and tint, closed-form motion
+  (exponential drag `(1 - e^(-k a)) / k`, gravity `a^2 / 2`, a swirl offset that is a sum of sines of age with hashed
+  phases), colour hot -> a -> b over life and a fade. No simulation state and no compute pass.
+- **Data, not code.** A `particles` event list in the scene (`events.particles`: `{ id, kind: "spellBurst", t, dur,
+  anchor: "wii", offset, seed }`; any default in `SPELL_DEFAULTS` can be overridden on the event: colours, counts,
+  `density`, `scale`, radii, spin, lives). `evaluate()` returns `st.particles = [{ ev, age, origin }]` for the events
+  live at t (anchor = an object's bounds centre from `geo`). The event shows in the outliner, the inspector and the
+  dope sheet's Events group (draggable like a ghost flash). The showcase sits at 10.9 s (f654), just after the remote
+  rings, in the remote stare.
+- **Turn it on:** Show menu > Effects > Particles (off by default; a renderer setting like Chunky pixels, so renders to
+  disk follow it), or `?particles` on the editor URL. Code: `src/render/particles.js` (`makeSpell`),
+  `ShotRenderer.setParticles` / `fxFor` and the particle pass in `render3D`, `particlesAt` in `src/core/evaluate.js`.
+- **Default look unchanged:** frames 300 and 720 with particles off are bit-identical to `spike` (0 differing pixels).
+
+**Determinism: 0 differing pixels** (Render quality, full look). f700 rendered once, again, after scrubbing forward
+(680 -> 699 -> 700), after scrubbing backwards (760 -> 701 -> 700) and as the first frame of a fresh page: all identical.
+Play quality f700 once vs after a backwards scrub: identical. The particle pass doesn't depend on quality (Play and
+Render differ only in the haze and DOF passes after it).
+
+**The one surprise: additive blending into the 4x MSAA scene buffer was not repeatable.** Drawing the sprites straight
+into `sceneRT` (MSAA) gave 1/255 differences in about 450-750 channel values of the same frame, run to run, in one
+page. Per layer: the 48-sprite core was exact; the 36k ring and 16k embers differed in a few values; the 64k sparks in
+about 600. MAX blending still differed (3-5 values), NoBlending did not, and with MSAA off additive blending was exact.
+So fragments from many overlapping primitives in an MSAA target are not bit-stable on this GPU and driver (RTX 4090,
+Chrome/Dawn on D3D12). Fix: the particles draw into their own **single-sampled half-float buffer** (`fxRT`: colour
+adds, distance takes the minimum), then **one full-screen quad adds it into the MSAA scene buffer** (one primitive per
+pixel: exact). Bonus: half float accumulates many dim sparks without 8-bit banding.
+
+**Depth, haze and DOF.** The particle buffer has no depth buffer, so each sprite tests itself against the scene's
+resolved distance pass, softly (`soft` = 1 cm fade where a sprite meets a surface: soft particles, so the ring meets
+the desk and the remote without hard cuts). The solid centre of a spark or ring particle (uv radius squared < 0.15,
+visible) writes its distance with **min blending** (`mrt.setBlendMode('dist', MinEquation)`); halos and the core glow
+don't write it, like `glowMaterial`. Sparks over the far background then focus at their own depth instead of the
+wall's (without it, sparks above the remote blurred with the background), and the haze in front of them is marched to
+their depth. The merge writes g = 1 only where a spark wrote a distance, so the pixel look's screen flag (g = 2)
+survives elsewhere. Particles go through lens, DOF, haze and the pixel look like any surface (they are in the scene
+buffer before the lens).
+
+**Cost** (GPU timestamps, headless Chrome, RTX 4090, 1920x1080 scene buffer, f664-700; the particle pass is the same at
+Play and Render quality):
+
+| Particles | Particle pass | Merge quad |
+|---|---|---|
+| 116k (default) | 0.08 ms | 0.04 ms |
+| 464k | 0.26-0.30 ms | 0.04 ms |
+| 928k | 0.51-0.59 ms | 0.04 ms |
+| 1.86M | 1.28-1.55 ms | 0.04-0.06 ms |
+
+For scale, the same frames' haze march is 3.7 ms (Play) / 106 ms (Render), DOF 1.3 / 8 ms, the scene pass 0.09 ms. The
+cost is vertex-bound and linear in count (about 0.75 ms per million); the effect is small on screen, so fill is cheap.
+Building an emitter compiles four pipelines on first use (a one-frame stall). Timing caveat: the main table was taken
+while `rt-lighting` held the GPU lock (my acquire timed out after 9 min and the bench ran anyway, a mistake); a recheck
+under the lock gave the same numbers (116k: 0.085 ms, 1.86M: 1.28 ms at f680). `nvidia-smi` showed 38-75% utilisation
+from other jobs during both. A 161-frame Render-quality sequence (f640-800) rendered and saved in 27 s.
+
+**three.js / TSL gotchas.**
+- `THREE.Sprite` + `SpriteNodeMaterial` with `sprite.count = N` is the instanced-billboard path: `positionNode` (per
+  instance, from `instanceIndex`) and `scaleNode`. Dead or unborn particles get scale 0 (degenerate quads, no
+  fragments). `frustumCulled = false` (the sprite sits at the origin). Sprites share one quad geometry: don't dispose it.
+- Compute per-particle colour in the vertex stage with `varying(node)`; the fragment only shapes the dot.
+- MRT attachments other than `output` default to **NoBlending** unless `setBlendMode` names them; per-attachment custom
+  blending (MinEquation) works on WebGPU (not in compatibility mode).
+- `renderer.clear()` ignores the MRT's per-attachment clear colours; the autoClear inside `render()` uses them
+  (`mrt.setClearColor('dist', far)`), so the particle buffer is cleared by rendering with autoClear on.
+- The soft depth test reads the resolved distance texture at `screenCoordinate * (1 / size)` (both top-left on WebGPU).
+
+**Frames:** `G:\Claude\Virtual Legacy\Channel\Virtual Shot spike\particles\`: `seq_spell_f640-800\` (161 frames, full
+look, Render quality), `spell_f640-800_1080p60.mp4`, `stills\`, `contact_sheet_crops.jpg`, `determinism\` (the f700
+renders compared above), `baseline_spike\` and `off_check\` (f300/f720 bit-identity), `try1`-`try3\` (look iterations;
+try1 and try2 predate the MSAA fix).
+
+**What's next.** More kinds behind `kind` (a registry, like the behaviours in §1.8): streaks (the velocity is the closed
+form's derivative, so velocity-aligned sprites are cheap), flipbook sprites, a sigil decal. Let the effect light the
+scene: the core's envelope as a point light in `bodyMaterial` and in the haze, like the ring light. Motion blur comes
+almost free from pure time (accumulate sub-frame t). Inspector editing of the parameters (now only the time and the
+JSON). A compute pass only if something needs state (collisions, sorting for non-additive blends), still recomputed
+from birth each frame so it stays a pure function of t.
+
+**Look presets (`look.style`).** Particles are an event (content), so a preset shouldn't own them; it can set how they
+render: `look.style.particles = { on, density, intensity, palette }` over the event's defaults. A "Wii" preset could
+halve the density and snap sprite sizes to whole internal pixels in the pixel look; a "cel" preset could quantise the
+colour over life into 3 bands and drop the halo. Play quality could use a lower `density` safely: with the closed form,
+a subset of indices is a valid subset of the effect.
+
 ## Running the spike
 
 ```
