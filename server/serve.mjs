@@ -28,7 +28,7 @@ const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '
 
 function resolveGet(urlPath) {
   for (const [pre, root] of Object.entries(MOUNTS)) if (urlPath.startsWith(pre)) return safeJoin(root, urlPath.slice(pre.length));
-  return safeJoin(REPO, urlPath.slice(1) || 'src/index.html');
+  return safeJoin(REPO, urlPath.slice(1) || 'src/landing.html');
 }
 function safeJoin(root, rel) {
   const p = path.resolve(root, decodeURIComponent(rel));

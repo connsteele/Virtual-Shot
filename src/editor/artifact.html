@@ -1,21 +1,6 @@
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Virtual Shot Editor</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&display=swap">
-<script type="importmap">
-{ "imports": {
-  "three": "/node_modules/three/build/three.webgpu.js",
-  "three/webgpu": "/node_modules/three/build/three.webgpu.js",
-  "three/tsl": "/node_modules/three/build/three.tsl.js",
-  "three/addons/": "/node_modules/three/examples/jsm/"
-} }
-</script>
-<link rel="stylesheet" href="./editor.css">
-</head>
-<body>
+<link rel="stylesheet" href="src/editor/editor.css">
 <div id="app" class="mode-edit">
   <header class="topbar">
     <div class="brand"><b>Virtual Shot</b><span id="docName" class="muted"></span></div>
@@ -77,6 +62,13 @@
     </div>
   </section>
 </div>
-<script type="module" src="./main.js"></script>
-</body>
-</html>
+<script>window.VS_CONFIG = { scene: 'scene.json', imgTextures: true };</script>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.webgpu.js",
+  "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.webgpu.js",
+  "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.tsl.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+} }
+</script>
+<script type="module" src="src/editor/main.js"></script>

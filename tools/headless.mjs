@@ -24,16 +24,17 @@ for (let i = 0; i < 50 && !target; i++) { await sleep(200); try { target = (awai
 if (!target) { chrome.kill(); throw new Error('Chrome did not start'); }
 const ws = new WebSocket(target.webSocketDebuggerUrl); let id = 0; const pending = new Map();
 ws.onmessage = e => { const m = JSON.parse(e.data); if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); }
-  if (m.method === 'Runtime.consoleAPICalled' && m.params.type === 'error') console.error('[page]', m.params.args.map(a => a.value ?? a.description).join(' ')); };
+  if (m.method === 'Runtime.consoleAPICalled' && m.params.type === 'error') console.error('[page]', m.params.args.map(a => a.value ?? a.description).join(' '));
+  if (m.method === 'Runtime.exceptionThrown') console.error('[page exception]', m.params.exceptionDetails.exception?.description || m.params.exceptionDetails.text); };
 await new Promise(r => { ws.onopen = r; });
 const send = (method, params = {}) => new Promise(r => { const i = ++id; pending.set(i, r); ws.send(JSON.stringify({ id: i, method, params })); });
 const evaluate = async js => { const m = await send('Runtime.evaluate', { expression: `(async () => (${js}))()`, awaitPromise: true, returnByValue: true });
   if (m.result?.exceptionDetails) throw new Error(m.result.exceptionDetails.exception?.description || 'page error'); return m.result?.result?.value; };
 await send('Runtime.enable');
-await send('Page.navigate', { url: BASE + urlPath });
+const nav = await send('Page.navigate', { url: BASE + urlPath }); if (nav.result?.errorText || nav.error) console.error('[navigate]', JSON.stringify(nav));
 const t0 = Date.now();
 await send('Emulation.setDeviceMetricsOverride', { width: 1920, height: 1080, deviceScaleFactor: 1, mobile: false });
-while (!(await evaluate('window.VS_READY || window.VS_ERROR || false'))) { if (Date.now() - t0 > 120000) throw new Error('page did not load'); await sleep(250); }
+if (process.env.NOWAIT) await sleep(+process.env.NOWAIT); else while (!(await evaluate('window.VS_READY || window.VS_ERROR || false'))) { if (Date.now() - t0 > (+process.env.LOAD_TIMEOUT || 120000)) throw new Error('page did not load'); await sleep(250); }
 const err = await evaluate('window.VS_ERROR || null'); if (err) throw new Error(err);
 console.log(JSON.stringify(await evaluate(expr), null, 1));
 const shot = flags.find(f => f.startsWith('--shot='));   // --shot=<png path>: a screenshot of the page after the script

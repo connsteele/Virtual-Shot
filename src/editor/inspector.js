@@ -14,7 +14,7 @@ const SNAP = 1 / 120;
 export class Inspector {
   constructor(E, el, title) {
     this.E = E; this.el = el; this.title = title;
-    E.on('select', () => this.draw()); E.on('change', () => this.draw()); E.on('frame', () => this.refresh()); E.on('mode', () => this.draw());
+    E.on('select', () => this.draw()); E.on('change', () => this.draw()); E.on('view', () => this.draw()); E.on('frame', () => this.refresh()); E.on('mode', () => this.draw());
     el.addEventListener('change', e => this.onInput(e.target, true));
     el.addEventListener('click', e => { const b = e.target.closest('button'); if (b) this.onButton(b); });
   }

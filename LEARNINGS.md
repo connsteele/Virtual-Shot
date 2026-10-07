@@ -362,6 +362,64 @@ This round rebuilt both inside the spike's engine and composited them on the GPU
 - The layer stack (§1.9) needs linear-light blending and a haze layer as well as 2D layers.
 - Random seeds should come from stable ids, never list positions.
 
+## 7. The editor
+
+`src/editor/` is a first editor on the scene document, laid out from the tools Connor uses: an Outliner (Blender,
+Unreal) on the left, the viewport in the middle, an Inspector (Blender Properties, Unreal Details) with After Effects
+stopwatches on the right, and an After Effects-style timeline along the bottom with a dope sheet and the graph editor
+ported from Black Page. Edit, Play and Render are page tabs in the top bar, as in Resolve.
+
+What it does:
+- **Viewport.** The shot camera with the final look (Play quality while things move, Render quality when they stop),
+  or a free view lit for editing, with Blender navigation (middle-drag orbit, Shift+middle pan, wheel zoom, F to frame
+  the selection), click to select, and a move/rotate/scale gizmo (G, R, S). Free view draws the grid, the shot
+  camera's frustum, the haze box, the glass frame's axes, the LED and ring lights, and the selection's bounds. Camera
+  view shows action- and title-safe frames.
+- **Inspector.** Transforms for placed objects; the camera rig's eight properties, each with a stopwatch (animate it),
+  its value at the playhead, and previous key / key here / next key; the chat messages, ghost flashes and pops as
+  editable lists; lighting and haze strength. Editing an animated value at the playhead sets a key there (After
+  Effects); editing a static one sets its value.
+- **Timeline.** Ruler with reveal and cut markers, playhead scrub, keys per object and property with After Effects key
+  icons, box select, drag to retime (snapped to frames), double-click to add a key, Delete; event lanes where messages,
+  ghosts and pops can be dragged in time. The graph editor shows chosen curves with Bézier handles, interpolation
+  buttons and the Black Page presets (settle, soft-back, exp…).
+- **Commands.** Every edit is a named command on the document (`src/core/commands.js`: setKey, deleteKeys, moveKeys,
+  setTransform, setEvent, setLook…) with snapshot undo and redo. The same commands are scriptable from the page
+  (`VS.cmd('setKey', {...})`), which is how the editor was tested from a headless Chrome.
+- **Render and Save.** Render mode writes a frame range to disk at Render quality (10 frames in 1.9 s; they match
+  the final master at 51 dB). Save writes the scene file back to `scenes/` through the dev server; in the artifact,
+  where files can't be written, it copies the scene JSON and keeps a draft in the browser.
+
+Effort: about 35 minutes (03:26–04:00 UTC), roughly 900 lines of editor code. Plain DOM and CSS grid were enough for
+the spike; no UI library.
+
+**What three.js gave for free:** `OrbitControls` and `TransformControls` work with `WebGPURenderer` unchanged, and
+raycasting picks the glTF models directly. The gizmo drives a proxy object; its transform is written back to the
+document, so the scene document stays the only source of truth.
+
+**What the editor taught us about the plan:**
+- **Commands and snapshot undo were the right call.** At this document size (about 50 KB) a JSON snapshot per edit
+  is instant, can't drift from the commands, and made undo, live drags (snapshot, mutate, commit once) and scripting
+  one mechanism. Exposing the commands made the doc's "Claude control" idea work with no extra code.
+- **Derived data goes stale when the document changes.** Moving the Wii Remote left its focus point and ring lights
+  behind until the renderer recomputed them from the document. The baked haze levels (§6) also go stale when an edit
+  changes the picture. The architecture needs a rule for derived and baked data: recompute on change, or mark it stale
+  and re-run its analysis.
+- **The shot is too dark to edit in.** It is lit by the screen alone and black before the reveal. Free view renders
+  it as after the reveal with a little fill light, the way Blender's solid view does.
+- **Typed keys need their own editors.** Focus keys are records (a target object and blur settings); the dope sheet
+  shows them, but editing them needs a custom inspector. Every typed track (focus, events, colours) will.
+- **Still missing:** resizable and dockable panels, multi-selection in the viewport, adding objects from assets, the
+  shot list, gamepad free-cam and takes, and live editing of compiled look settings (the haze's noise settings need a
+  shader rebuild).
+
+**Process lessons from this round:**
+- GitHub Desktop stashed the uncommitted work mid-session (`stash@{0}: !!GitHub_Desktop<spike>`, which
+  removed two new files and reverted one edit). The work was redone and committed straight away; the stash is still
+  there, untouched. Long agent sessions should commit work in progress often.
+- Git Bash rewrites arguments that look like absolute paths (`/dist/...` became `C:/Program Files/Git/dist/...`), so
+  the headless runner needs `MSYS_NO_PATHCONV=1` for URL paths without a query string.
+
 ## Running the spike
 
 ```
@@ -374,6 +432,8 @@ node tools/metrics_all.mjs <run>            # per-frame metrics for a whole run
 node tools/build_artifact.mjs      # dist/artifact (gitignored: holds copies of the models)
 node tools/bake_haze_levels.mjs    # after VS.measureHaze(frames): calibrate and bake haze levels into data/haze_levels.json
 node tools/headless.mjs "/src/index.html?f=300" "await VS.exportFrames([...], 'run')" --low   # run it in a separate headless Chrome
+                                   # (from Git Bash, prefix MSYS_NO_PATHCONV=1; --shot=<png> saves a screenshot)
+http://localhost:8790/src/editor/index.html   # the editor
 ```
 
 The final master is decoded to `ref_final\` with ffmpeg (BT.709, limited range); `REF=<dir>` points the comparison
@@ -389,6 +449,8 @@ tools at it. In the page: `await VS.exportFrames([...frames], '<run>')` writes P
 | `src/render/` | three.js renderer: TSL materials, lens and DOF passes, haze (`haze.js`, `cycles_noise.js`), final composite |
 | `src/layers/pops2d.js` | The pops as a 2D layer |
 | `src/app.js`, `src/index.html` | Viewer: scrub, play, export hooks |
+| `src/editor/` | The editor: outliner, inspector, viewport, timeline and graph editor |
+| `src/core/commands.js` | Named commands on the scene document, with undo |
 | `src/artifact.html` | The artifact page |
 | `server/serve.mjs` | Local server: read-only mounts of the Black Page folder, the PSX pack and the Wii Remote; PNG writes to G: |
 | `tools/` | Engine dump, importer, checks, comparisons, artifact build |

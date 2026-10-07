@@ -109,7 +109,7 @@ export class ShotRenderer {
         if (isLed) this.ledParts.push({ mesh, ov, c0: a0.map((v, c) => (v + a1[c]) / 2) });
       }
       const M = Array.from(root.matrix.elements), ctrLocal = mn.map((v, c) => (v + mx[c]) / 2);
-      this.geo.centres[o.id] = xf(M, ctrLocal);
+      this.geo.centres[o.id] = xf(M, ctrLocal); root.userData.ctrLocal = ctrLocal;
       if (o.ring) this.geo.wii = { M, ctr: xf(M, ctrLocal), up: nrm([M[4], M[5], M[6]]), leds: this.ledParts.map(l => l.c0) };
       if (o.id === 'wii') this.wiiRoot = root;
       scene.add(root);
@@ -273,7 +273,9 @@ export class ShotRenderer {
     this.doc = doc; this.ix = indexDoc(doc);
     for (const o of doc.objects) { const node = this.placed[o.id]; if (!node || !o.transform) continue;
       node.matrix.copy(m4(trsOf(o.transform))); if (node.userData.base) node.userData.base = node.matrix.clone(); node.updateMatrixWorld(true);
-      if (o.ring && this.geo.wii) { const M = Array.from(node.matrix.elements); this.geo.wii.M = M; } }
+      const M = Array.from(node.matrix.elements);
+      if (node.userData.ctrLocal) this.geo.centres[o.id] = xf(M, node.userData.ctrLocal);   // focus targets follow the object
+      if (o.ring && this.geo.wii) Object.assign(this.geo.wii, { M, ctr: this.geo.centres[o.id], up: nrm([M[4], M[5], M[6]]) }); }
     if (this.haze) { const H = this.haze.U, HZ = doc.look.haze; H.exposure.value = HZ.exposure ?? 1; }
   }
 
@@ -284,7 +286,7 @@ export class ShotRenderer {
     const f = new THREE.Vector3(); cam.getWorldDirection(f);
     const eye = cam.position.toArray(), target = cam.position.clone().add(f).toArray(), up = cam.up.toArray();
     const fs = { ...st, cut: false, revealK: Math.max(st.revealK, 1), flat: { before: false, overlay: 0 }, focus: null, haze: null,
-      led: { ...st.led, intensity: Math.max(st.led.intensity, 1) },
+      led: { ...st.led, intensity: Math.max(st.led.intensity, 1) }, lighting: { ...st.lighting, ambient: Math.max(st.lighting.ambient, 0.3) },
       camera: { eye, target, up, fov: cam.fov, fovRender: cam.fov, k: 0, ov: 1, squint: 0, near: cam.near, far: cam.far } };
     this.render(fs, { final: false, flat: false, pops: false, quality: 'render' });
     if (helpers) { const ac = r.autoClear; r.autoClear = false; r.setRenderTarget(null); r.render(helpers, cam); r.autoClear = ac; }

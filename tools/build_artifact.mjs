@@ -29,11 +29,12 @@ for (const [key, ref] of Object.entries(doc.assets)) {
   fs.copyFileSync(src, path.join(OUT, rel)); doc.assets[key] = 'rel:' + rel; files[rel] = rel;
 }
 fs.writeFileSync(path.join(OUT, 'scene.json'), JSON.stringify(doc)); files['scene.json'] = 'scene.json';
-for (const f of walk(path.join(REPO, 'src')).filter(f => f.endsWith('.js'))) {
+for (const f of walk(path.join(REPO, 'src')).filter(f => f.endsWith('.js') || f.endsWith('.css'))) {
   const rel = path.relative(REPO, f).split(path.sep).join('/');
   fs.mkdirSync(path.dirname(path.join(OUT, rel)), { recursive: true }); fs.copyFileSync(f, path.join(OUT, rel)); files[rel] = rel;
 }
-const html = fs.readFileSync(path.join(REPO, 'src/artifact.html'), 'utf8');
+// the page: the editor (src/editor/artifact.html); VIEWER=1 builds the plain viewer (src/artifact.html) instead
+const html = fs.readFileSync(path.join(REPO, process.env.VIEWER ? 'src/artifact.html' : 'src/editor/artifact.html'), 'utf8');
 if (!html.includes(`three@${pin}/`)) throw new Error(`artifact.html does not load three@${pin}`);
 fs.writeFileSync(path.join(OUT, 'index.html'), html);
 fs.writeFileSync(path.join(OUT, 'files.json'), JSON.stringify(files, null, 1));

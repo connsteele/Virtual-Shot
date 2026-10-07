@@ -77,14 +77,17 @@ input[type=number] { font-variant-numeric: tabular-nums; }
 .transport button { min-width: 34px; }
 .transport .tc { font-variant-numeric: tabular-nums; font-family: var(--mono); font-size: 13px; }
 .transport .spacer { flex: 1; }
-.tl-body { flex: 1; display: grid; grid-template-columns: 250px minmax(0, 1fr); min-height: 0; }
+.tl-body { flex: 1; display: grid; grid-template-columns: 250px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); min-height: 0; overflow: hidden; }
+.tl-canvas-wrap { position: relative; min-width: 0; min-height: 0; }
 .tl-labels { overflow: hidden; border-right: 1px solid var(--line); position: relative; }
 .tl-labels .lab { position: absolute; left: 0; right: 0; display: flex; align-items: center; gap: 6px; padding-left: calc(8px + var(--depth, 0) * 14px); font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; }
 .tl-labels .lab.group { color: var(--text); font-weight: 600; }
 .tl-labels .lab.on { color: var(--sel); background: #2e2a30; }
 .tl-labels .lab input { accent-color: var(--accent); }
+.tl-labels .lab button { padding: 1px 6px; font-size: 12px; }
+.tl-labels .lab select { padding: 1px 2px; font-size: 12px; max-width: 74px; }
 .tl-labels .lab .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
-#tlCanvas { width: 100%; height: 100%; display: block; min-width: 0; touch-action: none; }
+#tlCanvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
 
 /* modes */
 .mode-play #outliner, .mode-play #inspector { display: none; }

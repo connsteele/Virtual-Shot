@@ -86,9 +86,8 @@ async function boot() {
   E.select = sel => { E.sel = sel; E.emit('select', sel); E.requestRender(); };
 
   // ---- panels
-  new Outliner(E, $('outlinerBody'));
-  new Inspector(E, $('inspectorBody'), $('inspectorTitle'));
-  new Timeline(E, $('tlCanvas'), $('tlLabels'));
+  E.panels = { outliner: new Outliner(E, $('outlinerBody')), inspector: new Inspector(E, $('inspectorBody'), $('inspectorTitle')),
+    timeline: new Timeline(E, $('tlCanvas'), $('tlLabels')), viewport };
 
   // ---- transport and playback (real time, Play quality; drops frames to keep time like an NLE)
   let t0 = 0, f0 = 0;
@@ -108,7 +107,7 @@ async function boot() {
     document.querySelectorAll('[data-mode]').forEach(b => b.setAttribute('aria-selected', String(b.dataset.mode === m)));
     if (m === 'play') { setView('camera'); } E.emit('mode', m); requestAnimationFrame(() => { E.emit('resize'); E.requestRender(); }); };
   const setView = v => { E.view = v; document.querySelectorAll('[data-view]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.view === v)));
-    $('hudView').textContent = v === 'camera' ? 'Shot camera' : 'Free view'; viewport.setView(v); E.requestRender(); };
+    $('hudView').textContent = v === 'camera' ? 'Shot camera' : 'Free view (lit for editing)'; viewport.setView(v); E.emit('view', v); E.requestRender(); };
   E.setView = setView; E.setMode = setMode;
   document.querySelectorAll('[data-mode]').forEach(b => b.onclick = () => setMode(b.dataset.mode));
   document.querySelectorAll('[data-view]').forEach(b => b.onclick = () => setView(b.dataset.view));
