@@ -107,7 +107,7 @@ export class Viewport {
         ${item('haze', 'Haze', 'heaviest')}${item('dof', 'Depth of field')}${item('lens', 'Lens warp')}${item('glows', 'LED glows')}
         ${item('ghosts', 'Ghost flashes')}${item('pops', 'Pops (2D)')}</div>
       <div class="menu-group"><div class="menu-head">Shadows (research)</div>
-        ${item('shafts', 'Light shafts in the haze', 'screen, ring')}${item('softShadows', 'Soft surface shadows', 'screen, ring')}${item('contact', 'Contact shadows (AO)')}${item('hazeShadow', 'Haze self-shadowing', 'screen, ring')}</div>
+        ${item('shafts', 'Light shafts in the haze', 'screen, ring')}${item('softShadows', 'Soft surface shadows', 'screen, ring')}${item('contact', 'Contact shadows (AO)')}${item('hazeShadow', 'Haze self-shadowing', 'screen, ring')}${item('rtShadows', 'Ray-traced screen shadows', 'surfaces, WebGPU')}</div>
       <div class="menu-group"><div class="menu-head">Overlays</div>
         ${item('safe', 'Safe frames', 'camera')}${item('grid', 'Grid', 'free')}${item('frustum', 'Shot camera', 'free')}${item('hazeBox', 'Haze bounds', 'free')}
         ${item('lights', 'Lights and glass axes', 'free')}${item('bounds', 'Selection bounds', 'free')}</div>

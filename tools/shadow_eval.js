@@ -2,8 +2,8 @@
 // under the spike output folder (through the dev server) and returns the GPU time of every pass.
 //   node tools/headless.mjs "/src/editor/index.html?bg" "(await import('/tools/shadow_eval.js')).run([300, 720], 'shadows/run1')"
 const CONFIGS = { off: {}, shafts: { shafts: true }, surface: { softShadows: true }, contact: { contact: true }, both: { shafts: true, softShadows: true },
-  all: { shafts: true, softShadows: true, contact: true }, self: { hazeShadow: true }, all2: { shafts: true, softShadows: true, contact: true, hazeShadow: true } };
-const KEYS = ['shafts', 'softShadows', 'contact', 'hazeShadow'];
+  all: { shafts: true, softShadows: true, contact: true }, self: { hazeShadow: true }, rt: { rtShadows: true }, all2: { shafts: true, softShadows: true, contact: true, hazeShadow: true } };
+const KEYS = ['shafts', 'softShadows', 'contact', 'hazeShadow', 'rtShadows'];
 
 export async function run(frames, dir, configs = Object.keys(CONFIGS), { save = true, reps = 3 } = {}) {
   const { E } = window.VS, shot = E.shot, out = document.createElement('canvas'); out.width = 1920; out.height = 1080;

@@ -9,6 +9,7 @@ import { makeHaze } from './haze.js';
 import { makeScreenShadows, makePointShadows } from './shadows.js';
 import { makeAO } from './ao.js';
 import { makeHazeShadow } from './haze_shadow.js';
+import { makeRTShadows } from './rt_shadows.js';
 import { makeComposite, makeHazeMeter, makeEmitAverage, flatScreenQuad } from './final_comp.js';
 import { indexDoc } from '../core/evaluate.js';
 import { add, scl, xf, nrm, trsOf } from '../core/vec.js';
@@ -24,9 +25,9 @@ export const assetUrl = ref => {
 // ImageBitmap, not <img>.decode(): decode() never settles while the tab is hidden, and renders run in background tabs.
 const loadImage = async src => createImageBitmap(await (await fetch(src)).blob(), { premultiplyAlpha: 'none', colorSpaceConversion: 'none' });
 /** Parts of the look the editor can turn off in its viewport (all on for renders). */
-export const SHOW = { haze: true, dof: true, lens: true, glows: true, ghosts: true, pops: true, shafts: false, softShadows: false, contact: false, hazeShadow: false };
+export const SHOW = { haze: true, dof: true, lens: true, glows: true, ghosts: true, pops: true, shafts: false, softShadows: false, contact: false, hazeShadow: false, rtShadows: false };
 /** The shadow toggles (research): off by default; renders to disk follow the viewport's choice. */
-export const SHADOW_KEYS = ['shafts', 'softShadows', 'contact', 'hazeShadow'];
+export const SHADOW_KEYS = ['shafts', 'softShadows', 'contact', 'hazeShadow', 'rtShadows'];
 /** Forward, right and up of an evaluated camera (eye, target, up). */
 const camBasis = c => {
   const f = nrm(c.target.map((v, i) => v - c.eye[i])), rr = nrm([f[1] * c.up[2] - f[2] * c.up[1], f[2] * c.up[0] - f[0] * c.up[2], f[0] * c.up[1] - f[1] * c.up[0]]);
@@ -80,6 +81,8 @@ export class ShotRenderer {
       return loader.parseAsync(bin.buffer, '');
     };
     const sh = this.shadows = makeScreenShadows(doc.look.shadows?.screen), rsh = this.ringShadows = makePointShadows(doc.look.shadows?.ring);
+    // ray tracing reads storage buffers in the surface shader: WebGPU only
+    const rts = this.rtShadows = this.forceWebGL ? null : makeRTShadows();
     const ledRect = ix.obj.led.texelRect, ledTargets = new Set(ix.obj.led.appliesTo || []);
     this.ledParts = []; this.placed = {};
     for (const o of doc.objects) {
@@ -118,7 +121,7 @@ export class ShotRenderer {
         }
         const isLed = ledRe && ledRe.test(nodeName);
         const ov = isLed ? uniform(new THREE.Vector4(0, 0, 0, 0)) : null;
-        mesh.material = bodyMaterial(U, { map: src.map, emissiveMap: src.emissiveMap, ledRect: ledTargets.has(o.id) ? ledRect : [2, 2, 2, 2], ov, sh, rsh: o.ring ? null : rsh });
+        mesh.material = bodyMaterial(U, { map: src.map, emissiveMap: src.emissiveMap, ledRect: ledTargets.has(o.id) ? ledRect : [2, 2, 2, 2], ov, sh, rsh: o.ring ? null : rsh, rts });
         if (isLed) this.ledParts.push({ mesh, ov, c0: a0.map((v, c) => (v + a1[c]) / 2) });
       }
       const M = Array.from(root.matrix.elements), ctrLocal = mn.map((v, c) => (v + mx[c]) / 2);
@@ -137,7 +140,7 @@ export class ShotRenderer {
     for (const o of doc.objects.filter(o => o.type === 'card')) {
       const im = await loadImage(assetUrl(doc.assets[o.texture])), tx = new THREE.Texture(im);
       Object.assign(tx, { flipY: false, generateMipmaps: false, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, colorSpace: THREE.NoColorSpace, needsUpdate: true });
-      const mesh = new THREE.Mesh(quad, bodyMaterial(U, { map: tx, scMul: 1.15, blMul: o.brightness || 1.4, rawLed: true, sh, rsh }));
+      const mesh = new THREE.Mesh(quad, bodyMaterial(U, { map: tx, scMul: 1.15, blMul: o.brightness || 1.4, rawLed: true, sh, rsh, rts }));
       mesh.matrixAutoUpdate = false; mesh.matrix.copy(m4(trsOf(o.transform))); mesh.userData.docId = o.id; this.placed[o.id] = mesh; scene.add(mesh);
     }
     // glows: four for the ringing LEDs, one for the power LED
@@ -304,6 +307,8 @@ export class ShotRenderer {
     // shadow maps (the screen's patches, the ringing remote's cube), when a shadow toggle is on (redrawn only when something that casts has moved)
     const SH = this.shadows; SH.U.shafts.value = show.shafts ? 1 : 0; SH.U.surface.value = show.softShadows ? 1 : 0;
     const RS = this.ringShadows; RS.U.shafts.value = SH.U.shafts.value; RS.U.surface.value = SH.U.surface.value;
+    const RT = this.rtShadows; if (RT) { RT.U.on.value = show.rtShadows ? 1 : 0; RT.U.frame.value = st.frame || 0; RT.U.rays.value = this.quality === 'play' ? 4 : 16;
+      if (show.rtShadows) { this.mark('rt shadows (cpu bvh)'); RT.update(Object.values(this.placed), [this.crtMesh, ...this.glows], this.glassMap); } }
     if (show.shafts || show.softShadows) {
       const casters = Object.values(this.placed), mark = n => this.mark(n);
       SH.update(r, this.scene, { gm: this.glassMap, n: g.n, hide: [this.crtMesh, ...this.glows], casters, mark });
