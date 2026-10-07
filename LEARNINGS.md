@@ -614,7 +614,7 @@ compare the increments, not the totals. Frames and sheets: `shadows\round2\`.
 - **Self-shadowing dims the haze by about 18% (f1000 level 0.0445 → 0.0364) with little structure.** The wisps are thin
   sheets in mostly clear air (mean density 0.12 per metre), so light loses about a quarter of its strength over the
   ~1–3 m to the screen, nearly evenly. The baked haze levels would re-normalise the brightness, which leaves very
-  little visible change. Physically right and cheap, but not a look on its own; it would matter for thicker media.
+  little visible change. Physically right and cheap, but not a look on its own; it would matter for thicker media. Connor's call (7 Oct): not worth it for this shot; the toggle stays, off.
 - **Ray tracing in a fragment shader works in WebGPU through TSL with no extensions**: storage buffers, nested
   dynamic loops with `Break`, and a stackless BVH. It matches the 12 shadow maps closely here (the screen's shadows
   are mostly hidden from this camera, as round one found), so the maps are the right default and ray tracing is the
