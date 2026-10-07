@@ -73,6 +73,12 @@ tracks.push({ target: 'scene', prop: 'params.chaos', default: 0, keys: S.chaos.m
 tracks.push({ target: 'cam', prop: 'focus', type: 'focus', settings: { max: S.focus.max, edgeStart: S.focus.edgeStart },
   keys: S.focus.keys.map(({ t, curve, ...v }) => ({ t, v: { ...v, target: v.target === 'wii' ? 'wii' : v.target }, ...(curve ? { curve } : {}) })) });
 
+// --- pops: seeds from the original 17-pop list (final/v1/opener_final_pops17.json)
+const POPS17 = JSON.parse(fs.readFileSync(path.join(BP, 'final/v1/opener_final_pops17.json'), 'utf8')).pops;
+const KEPT = S.pops.map(p => POPS17.findIndex(q => Math.abs(q.t - p.t) < 1e-6 && q.text === p.text));
+if (KEPT.includes(-1)) throw new Error('a final pop is missing from the 17-pop list');
+function popsWithSeeds() { return S.pops.map((p, i) => ({ ...p, seed: KEPT[i], seedAlt: i })); }
+
 // --- the scene document ----------------------------------------------------------------------------------------------
 const doc = {
   format: 'virtual-shot/scene', version: 0,
@@ -101,6 +107,12 @@ const doc = {
   // Things that happen at a time with parameters, rather than keyed values.
   events: {
     ghosts: S.ghosts.map(g => ({ ...g, img: 'ghost_' + g.img })),
+    pops: popsWithSeeds(),
+    // The final's pops layer was rendered with the original 17-pop list, then 6 pops were cut and some frames were
+    // re-rendered with the 11-pop list. Each pop's jitter is seeded by its list index, so matching the final needs both
+    // seeds and the frames that used the second. Those frames are not derivable from the script: they were found by
+    // rendering every pop frame both ways against blender/export/final_pops (all 177 match one way exactly).
+    popsAltFrames: [1097, 1154, 1155],
   },
   // 2D layers: procedural canvases that are a function of t. The chat feeds the CRT screen as a texture and is also
   // drawn full-frame before (and during) the reveal.
@@ -117,8 +129,22 @@ const doc = {
       glow: { base: [0.95, 0.46, 0.42], chaosGain: [0.55, 0.5], floor: [0.05, 0.07, 0.08] } },
     screen: { curvature: 0.08, overscan: 1.05, crop: [120, 1800], scanFreq: 900 },
     lens: { distortScale: 0.3, fringe: 0.03 },
+    // The final composite's haze (Black Page: Cycles pass 2, look C "fine wisps", final/atmos_build.py + blender/haze_mat.py),
+    // rendered in the engine. Density field and lights as in Blender; level curve as final/comp_build.py.
+    haze: {
+      box: [[-1.6, -0.97, -0.7], [1.6, 1.5, 2.4]],
+      density: { density: 1.6, scale: 3.0, detail: 4, roughness: 0.55, distortion: 0.9, wisp: 0.04, cover: [0.5, 0.66],
+        coverScale: 0.35, coverDetail: 2, coverRoughness: 0.5, drift: 0.0125, evolve: 0.03 },
+      anisotropy: 0.3, screenLight: 100, ringW: 0.06, ledW: 0.006,
+      grid: [20, 15], stepLen: 0.015, maxSteps: 320, resolution: 0.5, exposure: 1,
+      level: { start: 264, revealEnd: 300, base: 0.0045, end: 0.0072, buildFrom: 720, last: 1175, maxGain: 0.75, smooth: 30 },
+    },
   },
 };
+
+// the haze level analysis (tools/bake_haze_levels.mjs), if it has been run
+const LV = path.join(REPO, 'data/haze_levels.json');
+if (fs.existsSync(LV)) { const lv = JSON.parse(fs.readFileSync(LV)); doc.look.haze.exposure = lv.exposure; doc.look.haze.levels = { from: lv.from, values: lv.values }; }
 
 const out = path.join(REPO, 'scenes/black_page.scene.json');
 fs.mkdirSync(path.dirname(out), { recursive: true });

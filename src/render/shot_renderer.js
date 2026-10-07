@@ -1,10 +1,12 @@
 // Builds a three.js scene from the scene document and renders evaluated frames with the Black Page look.
 // WebGPURenderer (falls back to WebGL2 by itself) with TSL materials; no colour management, like the engine.
 import * as THREE from 'three/webgpu';
-import { mrt, output, vec4, positionWorld, cameraPosition, uniform } from 'three/tsl';
+import { mrt, output, vec2, vec4, positionWorld, cameraPosition, uniform, uv, Fn } from 'three/tsl';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { bodyMaterial, crtMaterial, glowMaterial, makeLightUniforms } from './materials.js';
 import { makePost } from './post.js';
+import { makeHaze } from './haze.js';
+import { makeComposite, makeHazeMeter, makeEmitAverage, flatScreenQuad } from './final_comp.js';
 import { indexDoc } from '../core/evaluate.js';
 import { add, scl, xf, nrm, trsOf } from '../core/vec.js';
 
@@ -27,7 +29,8 @@ export class ShotRenderer {
     this.W = doc.output.width; this.H = doc.output.height;
   }
 
-  async init(chatCanvas) {
+  /** chatCanvas: the tall chat texture; flatCanvas / popsCanvas: the full-frame chat and pops layers (composited here). */
+  async init(chatCanvas, { flatCanvas = null, popsCanvas = null } = {}) {
     const { doc, ix } = this;
     THREE.ColorManagement.enabled = false;
     const r = this.renderer = new THREE.WebGPURenderer({ canvas: this.canvas, antialias: false, alpha: false, forceWebGL: this.forceWebGL, trackTimestamp: this.trackTimestamp });
@@ -88,6 +91,15 @@ export class ShotRenderer {
           for (let i = 0; i < uvA.count; i++) { u0 = [Math.min(u0[0], uvA.getX(i)), Math.min(u0[1], uvA.getY(i))]; u1 = [Math.max(u1[0], uvA.getX(i)), Math.max(u1[1], uvA.getY(i))]; }
           mesh.material = this.crt = crtMaterial({ chatTex, ghostTex, ub: [...u0, ...u1] });
           this.screenUB = [...u0, ...u1];
+          // glass uv -> world (least squares over the primitive's vertices): where each part of the image emits from
+          const n = pos.count, Mw = mesh.matrixWorld; let S11 = 0, Su = 0, Sv = 0, Suu = 0, Suv = 0, Svv = 0; const R = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+          for (let i = 0; i < n; i++) { const w = new THREE.Vector3().fromBufferAttribute(pos, i).applyMatrix4(Mw).toArray(), u = uvA.getX(i), v = uvA.getY(i);
+            S11 += 1; Su += u; Sv += v; Suu += u * u; Suv += u * v; Svv += v * v; for (let c = 0; c < 3; c++) { R[0][c] += w[c]; R[1][c] += u * w[c]; R[2][c] += v * w[c]; } }
+          const A = new THREE.Matrix3().set(S11, Su, Sv, Su, Suu, Suv, Sv, Suv, Svv).invert().elements;   // symmetric
+          const coef = [0, 1, 2].map(r => [0, 1, 2].map(c => A[r * 3] * R[0][c] + A[r * 3 + 1] * R[1][c] + A[r * 3 + 2] * R[2][c]));
+          const at = (u, v) => [0, 1, 2].map(c => coef[0][c] + coef[1][c] * u + coef[2][c] * v);
+          const p00 = at(u0[0], u0[1]), p10 = at(u1[0], u0[1]), p01 = at(u0[0], u1[1]);
+          this.glassMap = { p00, eu: p10.map((x, c) => x - p00[c]), ev: p01.map((x, c) => x - p00[c]) };
           continue;
         }
         const isLed = ledRe && ledRe.test(nodeName);
@@ -121,21 +133,89 @@ export class ShotRenderer {
     const rt = (w, h, o = {}) => new THREE.RenderTarget(w, h, { depthBuffer: false, generateMipmaps: false, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, type: THREE.UnsignedByteType, ...o });
     this.sceneRT = new THREE.RenderTarget(this.W, this.H, { count: 2, samples: 4, depthBuffer: true, type: THREE.UnsignedByteType, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, generateMipmaps: false });
     this.sceneRT.textures[0].name = 'output';
-    Object.assign(this.sceneRT.textures[1], { name: 'dist', type: THREE.HalfFloatType, format: THREE.RedFormat, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter });
+    Object.assign(this.sceneRT.textures[1], { name: 'dist', type: THREE.HalfFloatType, format: THREE.RGFormat, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter });
     this.lensRT = rt(this.W, this.H);
     this.cocRT = rt(this.W, this.H, { type: THREE.HalfFloatType, format: THREE.RedFormat, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter });
     this.finalRT = rt(this.W, this.H);
     // Blending for MRT targets is read from the renderer-level MRT (not the material's mrtNode): 'dist' follows each
     // material, so opaque surfaces overwrite it and the additive glows (which output dist 0) leave it untouched.
-    this.sceneMRT = mrt({ output, dist: vec4(positionWorld.distance(cameraPosition), 0, 0, 1) }).setBlendMode('dist', new THREE.BlendMode(THREE.MaterialBlending));
+    this.sceneMRT = mrt({ output, dist: vec4(positionWorld.distance(cameraPosition), 1, 0, 1) }).setBlendMode('dist', new THREE.BlendMode(THREE.MaterialBlending));
     this.post = makePost({ src: this.sceneRT.textures[0], zs: this.sceneRT.textures[1], lens: this.lensRT.texture, coc: this.cocRT.texture, final: this.finalRT.texture });
+
+    // final look: haze, layers and the composite (doc.look.haze, doc.layers)
+    const tex2d = c => { const t = new THREE.CanvasTexture(c || document.createElement('canvas'));
+      Object.assign(t, { flipY: false, generateMipmaps: false, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, colorSpace: THREE.NoColorSpace }); return t; };
+    this.flatTex = tex2d(flatCanvas); this.popsTex = tex2d(popsCanvas);
+    const HZ = doc.look.haze;
+    this.hazeRT = rt(Math.round(this.W * 0.75), Math.round(this.H * 0.75), { type: THREE.HalfFloatType });
+    if (HZ) {
+      const [gx, gy] = HZ.grid;
+      this.emitHiRT = rt(gx * 32, gy * 32);
+      this.emitRT = rt(gx, gy, { type: THREE.HalfFloatType, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter });
+      const ub = this.screenUB, crtColor = this.crt.userData.color;
+      this.emitFlat = flatScreenQuad(Fn(() => crtColor(vec2(ub[0], ub[1]).add(uv().mul(vec2(ub[2] - ub[0], ub[3] - ub[1])))))());
+      this.emitAvg = makeEmitAverage({ hiTex: this.emitHiRT.texture, gx, gy });
+      this.emitAvg.U.screenLight.value = HZ.screenLight ?? 100;
+      this.haze = makeHaze({ distTex: this.sceneRT.textures[1], emitTex: this.emitRT.texture, look: HZ });
+      this.meterRT = rt(480, 270, { type: THREE.FloatType });
+      this.meter = makeHazeMeter({ hazeTex: this.hazeRT.texture });
+    }
+    this.comp = makeComposite({ engineTex: this.finalRT.texture, flatTex: this.flatTex, popsTex: this.popsTex, hazeTex: this.hazeRT.texture });
     return this;
   }
 
-  /** Render one evaluated frame into finalRT and the canvas. */
-  render(st) {
-    const { renderer: r, U, ix, post } = this, g = ix.glass, W_ = g.W, c = st.camera;
+  /** Render one evaluated frame to the canvas: the 3D shot (into finalRT), the haze, then the composite with the 2D
+   *  layers. opts: { flat: the flat chat canvas changed, pops: the pops canvas has content, haze: render the haze,
+   *  final: composite the haze and pops (false = the engine picture alone) }. */
+  render(st, opts = {}) {
+    const r = this.renderer, c = st.camera, final = opts.final !== false;
     if (st.cut) { r.setRenderTarget(this.finalRT); r.clear(); r.setRenderTarget(null); r.clear(); return; }
+    const hazeOn = !!(final && this.haze && opts.haze !== false && st.haze && st.haze.gain > 0 && !st.flat.before);
+    if (!st.flat.before) {
+      this.render3D(st);
+      if (hazeOn) this.renderHaze(st);
+    }
+    if (opts.flat !== false) this.flatTex.needsUpdate = true;
+    if (opts.pops) this.popsTex.needsUpdate = true;
+    const C = this.comp.U;
+    C.before.value = st.flat.before ? 1 : 0; C.overlay.value = st.flat.overlay; C.gain.value = st.haze ? st.haze.gain : 0;
+    C.hazeOn.value = hazeOn ? 1 : 0; C.popsOn.value = final && opts.pops ? 1 : 0;
+    C.k.value = c.k; C.sq.value = c.squint; C.aspect.value = this.W / this.H;
+    r.setRenderTarget(null); this.comp.quad.render(r);
+  }
+
+  /** The haze for this frame: the screen's light grid, then the ray march into hazeRT (a fraction of the scene buffer). */
+  renderHaze(st) {
+    const r = this.renderer, H = this.haze.U, c = st.camera, gm = this.glassMap, R = st.ring, led = st.led, HZ = this.doc.look.haze;
+    r.setRenderTarget(this.emitHiRT); this.emitFlat.render(r);
+    r.setRenderTarget(this.emitRT); this.emitAvg.quad.render(r);
+    const f = nrm(c.target.map((v, i) => v - c.eye[i])), rr = nrm([f[1] * c.up[2] - f[2] * c.up[1], f[2] * c.up[0] - f[0] * c.up[2], f[0] * c.up[1] - f[1] * c.up[0]]);
+    const uu = [rr[1] * f[2] - rr[2] * f[1], rr[2] * f[0] - rr[0] * f[2], rr[0] * f[1] - rr[1] * f[0]];
+    H.eye.value.set(...c.eye); H.cf.value.set(...f); H.cr.value.set(...rr); H.cu.value.set(...uu);
+    H.tanY.value = Math.tan(c.fovRender * Math.PI / 360); H.aspect.value = this.W / this.H; H.t.value = st.t; H.frame.value = st.frame;
+    H.g00.value.set(...gm.p00); H.geu.value.set(...gm.eu); H.gev.value.set(...gm.ev); H.gn.value.set(...this.ix.glass.n);
+    const lin = x => x <= 0.04045 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4), I4 = 1 / (4 * Math.PI);
+    const ringW = R ? (HZ.ringW ?? 0.06) * (R.ember + R.lvl * R.I) : 0;
+    H.ringPos.value.set(...(R ? R.pos : [0, -10, 0])); H.ringI.value.set(...(R ? R.col.map(v => lin(v) * ringW * I4 * (HZ.ringGain ?? 1)) : [0, 0, 0]));
+    const ledW = (HZ.ledW ?? 0.006) * (led.intensity > 0 ? 1 : 0);
+    H.ledPos.value.set(...add(led.pos, scl(led.n, this.ix.glass.W * 0.012))); H.ledI.value.set(...led.color.map(v => lin(v) * ledW * I4));
+    const hw = Math.round(this.sceneRT.width * (HZ.resolution ?? 0.5)), hh = Math.round(this.sceneRT.height * (HZ.resolution ?? 0.5));
+    if (this.hazeRT.width !== hw || this.hazeRT.height !== hh) this.hazeRT.setSize(hw, hh);
+    r.setRenderTarget(this.hazeRT); this.haze.march.render(r);
+  }
+
+  /** Mean luminance of this frame's lens-warped, ungained haze (call after render()). */
+  async hazeLevel(st) {
+    const r = this.renderer, M = this.meter.U, c = st.camera;
+    M.k.value = c.k; M.sq.value = c.squint; M.aspect.value = this.W / this.H;
+    r.setRenderTarget(this.meterRT); this.meter.quad.render(r); r.setRenderTarget(null);
+    const px = await r.readRenderTargetPixelsAsync(this.meterRT, 0, 0, 480, 270);
+    let s = 0; for (let i = 0; i < 480 * 270; i++) s += px[i * 4];
+    return s / (480 * 270) / this.haze.U.exposure.value;   // at exposure 1
+  }
+
+  render3D(st) {
+    const { renderer: r, U, ix, post } = this, g = ix.glass, W_ = g.W, c = st.camera;
     this.chatTex.needsUpdate = true;
     // camera
     const cam = this.camera; cam.fov = c.fovRender; cam.near = c.near; cam.far = c.far; cam.aspect = this.W / this.H;
@@ -178,7 +258,6 @@ export class ShotRenderer {
     r.setRenderTarget(this.cocRT); post.quads.coc.render(r);
     const sc = this.H / 1080; P.px.value.set(1 / this.W, 1 / this.H); P.sc.value = sc; P.maxR.value = D ? F.max * sc : 0; P.rs.value = 0.5 * sc;
     r.setRenderTarget(this.finalRT); post.quads.dof.render(r);
-    r.setRenderTarget(null); post.quads.blit.render(r);
   }
 
   /** RGBA8 pixels of the last frame (top row first). The WebGL2 backend reads rows bottom-up, WebGPU top-down. */

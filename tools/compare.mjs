@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const SPIKE = 'G:/Claude/Virtual Legacy/Channel/Virtual Shot spike';
-const REF = 'G:/Claude/Virtual Legacy/Videos/Calling (Wii)/Thumbnails & Graphics/Black Page Studio/blender/export/final_engine';
+const REF = process.env.REF || 'G:/Claude/Virtual Legacy/Videos/Calling (Wii)/Thumbnails & Graphics/Black Page Studio/blender/export/final_engine';
 const run = process.argv[2] || 'try1';
 const src = path.join(SPIKE, run);  // run may be a nested path, e.g. scratch/oldengine_export
 let frames = process.argv.slice(3).map(Number);
@@ -30,7 +30,7 @@ for (const f of frames) {
   const rmse = +rm.match(/\(([\d.e+-]+)\)/)[1], psnr = rmse > 0 ? 20 * Math.log10(1 / rmse) : 99;
   metrics[f] = { t: +(f / 60).toFixed(3), mae: +mae.toFixed(3), rmse255: +(rmse * 255).toFixed(3), psnr: +psnr.toFixed(2), over8pct: +p8.toFixed(3), over32pct: +p32.toFixed(3) };
   const label = (img, text) => ['(', img, '-resize', '960x540', '-gravity', 'NorthWest', '-fill', '#ECEFEB', '-undercolor', '#000a', '-pointsize', '22', '-annotate', '+10+8', text, ')'];
-  if (!process.env.NOIMG) mg(...label(a, `Black Page engine  f${f}  ${(f / 60).toFixed(2)} s`), ...label(b, `Virtual Shot spike (${run})`), ...label(diff, `difference x${GAIN}   PSNR ${psnr.toFixed(1)} dB   ${p8.toFixed(3)}% px > 8/255`),
+  if (!process.env.NOIMG) mg(...label(a, `${process.env.REFLABEL || "Black Page engine"}  f${f}  ${(f / 60).toFixed(2)} s`), ...label(b, `Virtual Shot spike (${run})`), ...label(diff, `difference x${GAIN}   PSNR ${psnr.toFixed(1)} dB   ${p8.toFixed(3)}% px > 8/255`),
     '+append', path.join(out, `side_${id(f)}.jpg`));
   console.log(f, JSON.stringify(metrics[f]));
 }

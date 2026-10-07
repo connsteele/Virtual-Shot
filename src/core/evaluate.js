@@ -67,6 +67,19 @@ function ringAt(doc, wiiObj, geo, t, eye, fps) {
     rad: Rg.radius || 0.07, glow: Rg.glow ?? 1, rum, pos: add(ctr, scl(m.up, 0.006)), leds: leds.map(p => add(p, scl(nrm(sub(eye, p)), 0.004))) };
 }
 
+/** Haze strength for frame f, as Black Page's compositor keyed it (final/comp_build.py): fade in with the reveal, then
+ *  scale each frame's haze toward a target brightness (measured levels averaged over +-smooth frames), capped. The
+ *  levels are an analysis of the rendered haze, baked into the document (look.haze.levels). */
+export function hazeGain(H, f) {
+  const L = H.level; if (!L || f < L.start) return 0;
+  let k = Math.min(1, (f - L.start) / (L.revealEnd - L.start)); k = k * k * (3 - 2 * k);
+  const b = Math.max(0, Math.min(1, (f - L.buildFrom) / (L.last - L.buildFrom)));
+  const target = k * (L.base + (L.end - L.base) * b);
+  const lv = H.levels; let m = null;
+  if (lv && lv.values) { let s = 0, n = 0; for (let g = f - L.smooth; g <= f + L.smooth; g++) { const v = lv.values[g - lv.from]; if (v !== undefined && v !== null) { s += v; n++; } } if (n) m = s / n * (H.exposure ?? 1); }
+  return Math.min(L.maxGain, m ? target / m : 0.7 * target / L.base);
+}
+
 /** Ghost flash: fast attack, short hold, decay, with per-frame flicker and dropouts. */
 function ghostLevel(g, t, i) {
   const d = g.dur || 0.3, a = t - g.t; if (a < 0 || a > d) return 0; const atk = Math.min(0.035, d * .2), dec = d * .45;
@@ -98,5 +111,6 @@ export function evaluate(doc, t, geo, ix = indexDoc(doc)) {
     ring: ringAt(doc, ix.obj.wii, geo, t, pose.eye, fps),
     focus: focusAt(ix, geo, ix.tracks['cam.focus'], t, pose.eye, vp, pose.k, aspect),
     ghosts,
+    haze: doc.look.haze ? { gain: hazeGain(doc.look.haze, frame) } : null,
   };
 }

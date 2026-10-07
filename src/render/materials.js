@@ -52,7 +52,8 @@ export function bodyMaterial(U, { map = null, emissiveMap = null, ledRect = [2, 
 }
 
 /** The CRT screen: chat texture cropped to the glass, barrel bulge, RGB fringe, scanlines, vignette, glass tint,
- *  and up to four ghost reflections on the glass surface. */
+ *  and up to four ghost reflections on the glass surface. Returns the material and `color(uvNode)`, the same shader
+ *  as a function of the glass mesh's uv (used flat, in glass uv space, to light the haze). */
 export function crtMaterial({ chatTex, ghostTex, ub }) {
   const S = {
     fx: uniform(0), time: uniform(0), ub: uniform(new THREE.Vector4(...ub)),
@@ -60,17 +61,18 @@ export function crtMaterial({ chatTex, ghostTex, ub }) {
     gp: uniformArray([0, 1, 2, 3].map(() => new THREE.Vector4(.5, .5, 1, 1))),
     ga: uniformArray([0, 0, 0, 0], 'float'), gm: uniformArray([0, 0, 0, 0], 'float'),
   };
-  const m = new THREE.MeshBasicNodeMaterial({ side: THREE.DoubleSide });
-  m.outputNode = Fn(() => {
+  // A plain builder, called inside each material's own Fn: shared Fn functions that read uniforms break when two
+  // materials use them (the generated WGSL function refers to the first material's uniform block).
+  const color = meshUV => {
     const ubv = S.ub;
-    const q0 = uv().sub(ubv.xy).div(ubv.zw.sub(ubv.xy));
+    const q0 = meshUV.sub(ubv.xy).div(ubv.zw.sub(ubv.xy));
     const c0 = q0.sub(0.5);
     const cb = c0.mul(float(1).add(S.fx.mul(0.08).mul(dot(c0, c0))));
     const g = cb.add(0.5), c = cb.div(1.05), q = c.add(0.5);
     const s = vec2(mix(0.0625, 0.9375, q.x), q.y);
     const inside = s.y.greaterThan(0).and(s.y.lessThan(1)).and(q.x.greaterThan(0)).and(q.x.lessThan(1));
     const px = vec2(S.fx.div(1920), 0);
-    const tex = vec3(texture(chatTex, s.add(px)).r, texture(chatTex, s).g, texture(chatTex, s.sub(px)).b);
+    const tex = vec3(texture(chatTex, s.add(px)).level(0).r, texture(chatTex, s).level(0).g, texture(chatTex, s.sub(px)).level(0).b);
     const col = select(inside, tex, vec3(0)).toVar();
     const scan = sin(g.y.mul(900)).mul(0.22).add(0.78);
     const vig = sstep(0.75, 0.25, length(c.mul(vec2(1, 1.2))));
@@ -85,14 +87,16 @@ export function crtMaterial({ chatTex, ghostTex, ub }) {
       const l2 = l.add(vec2(0.035, 0.02));
       const in1 = l.x.greaterThan(0).and(l.x.lessThan(1)).and(l.y.greaterThan(0)).and(l.y.lessThan(1));
       const in2 = l2.x.greaterThan(0).and(l2.x.lessThan(1)).and(l2.y.greaterThan(0)).and(l2.y.lessThan(1));
-      const a1 = texture(ghostTex, mix(gr.xy, gr.zw, l)).a, a2 = texture(ghostTex, mix(gr.xy, gr.zw, l2)).a;
+      const a1 = texture(ghostTex, mix(gr.xy, gr.zw, l)).level(0).a, a2 = texture(ghostTex, mix(gr.xy, gr.zw, l2)).level(0).a;
       ref.addAssign(select(in1, a1, float(0)).mul(ga).add(select(in2, a2, float(0)).mul(ga).mul(0.3)));
     }
     col.addAssign(vec3(0.7, 0.8, 0.9).mul(ref).mul(S.fx).mul(float(1).sub(dot(c, c).mul(0.4))));
     const outside = g.x.lessThan(0).or(g.x.greaterThan(1)).or(g.y.lessThan(0)).or(g.y.greaterThan(1));
     return vec4(select(outside, vec3(0), col), 1);
-  })();
-  m.userData.S = S;
+  };
+  const m = new THREE.MeshBasicNodeMaterial({ side: THREE.DoubleSide });
+  m.outputNode = Fn(() => color(uv()))();
+  m.userData.S = S; m.userData.color = color;
   return m;
 }
 

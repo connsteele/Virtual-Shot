@@ -19,6 +19,7 @@ const MOUNTS = {
   '/bp/': 'G:/Claude/Virtual Legacy/Videos/Calling (Wii)/Thumbnails & Graphics/Black Page Studio',
   '/psx/': 'E:/Assets/Asset Packs/PSX Humble Bundle/PSX Mega Pack 3.1.3/Models/GLB (recommended)',
   '/wii/': 'G:/GPT/Projectless/2026-10-04/gen/outputs/Wii_Remote_LowPoly',
+  '/bp-final-ref/': 'G:/Claude/Virtual Legacy/Channel/Virtual Shot spike/ref_final',   // the final master, decoded to PNG
 };
 const OUT = process.env.VS_OUT || 'G:/Claude/Virtual Legacy/Channel/Virtual Shot spike';
 const PORT = +(process.argv[2] || process.env.PORT || 8790);

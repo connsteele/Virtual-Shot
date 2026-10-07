@@ -6,7 +6,7 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 
 const SPIKE = 'G:/Claude/Virtual Legacy/Channel/Virtual Shot spike';
-const REF = 'G:/Claude/Virtual Legacy/Videos/Calling (Wii)/Thumbnails & Graphics/Black Page Studio/blender/export/final_engine';
+const REF = process.env.REF || 'G:/Claude/Virtual Legacy/Videos/Calling (Wii)/Thumbnails & Graphics/Black Page Studio/blender/export/final_engine';
 const run = process.argv[2] || 'full_v1', f0 = +(process.argv[3] ?? 0), f1 = +(process.argv[4] ?? 1175);
 
 /** Decode an 8-bit RGB/RGBA PNG to {w, h, ch, px}. */

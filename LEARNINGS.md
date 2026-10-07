@@ -3,6 +3,8 @@
 The spike rebuilt the Black Page cold open on the architecture sketch's plan: a scene document (JSON, every object
 placed as data), a time core (`evaluate`), three.js pinned at r186 (`WebGPURenderer` + TSL), the CRT screen, lens,
 squint and depth of field, a timeline scrub and frame export. It reached parity with the Black Page engine frames.
+A second round then took the engine to the **final composite**: the Cycles haze and the pops layer, rendered in the
+engine instead of Blender, at near visual parity with the delivered master (see [section 6](#6-final-composite-parity-haze-and-pops-in-the-engine)).
 
 **Result, all 1176 frames (pops off, the engine picture):**
 
@@ -18,6 +20,12 @@ Side-by-side and difference images (reference | spike | difference ×16) for the
 f720 stare and squint, f1098 and f1104 ghost flash, f1175 last frame). f1098 is exactly 18.3 s, where the ghost's
 attack has not started yet; f1104 (18.4 s) shows the flash at full strength. Per-frame metrics for the whole run are
 in `compare\full_v1\metrics_all.csv`.
+
+**Result, final composite (engine + haze + pops), all 1176 frames** against the delivered master
+(`final\black_page_opener_final_1080p60_prores4444.mov`, decoded to PNG): worst frame 40.0 dB (f759), median 46.0 dB,
+at most 3.3% of a frame's pixels off by more than 8/255 and 0.18% by more than 32/255. Key frames are in
+`compare\final_look_keyframes\` and `compare\final_look_sheet.jpg`; per-frame metrics in `compare\final_look_v1\`.
+The whole final renders and exports in 185 s; Black Page's pipeline took about an hour at 1080p.
 
 The plan held up where it matters most: a pure `evaluate(t)` plus a three.js renderer reproduced the engine almost
 bit for bit, and quickly. What it got wrong or left vague is mostly the scene format (it is too simple for a real shot)
@@ -269,19 +277,96 @@ more than 0.016% of pixels off by more than 8/255, largest single-pixel differen
 old engine (also WebGL2), so this pins the WebGPU residuals on the backend's rasterisation and MSAA, not on the port.
 The fallback works, but frame export from a hidden tab needs `?bg` (see §1.15).
 
+## 6. Final-composite parity: haze and pops in the engine
+
+Black Page's final is the engine picture plus two passes made elsewhere: a Cycles haze pass (path traced in Blender,
+2.5 s a frame at 1440×810) and the engine's pops layer, assembled in Blender's compositor with a per-frame haze level.
+This round rebuilt both inside the spike's engine and composited them on the GPU in the same frame.
+
+| Frames | Backend | Match against the final master |
+|---|---|---|
+| 0–263 (flat chat) | WebGPU | 68–75 dB (the master's 4:4:4 ProRes round trip) |
+| 264–1175 (3D, haze, pops) | WebGPU | worst 40.0 dB (f759), median 45.2 dB; median 0.74% of pixels off by more than 8/255 |
+| f720, f1104 | WebGL2 fallback, same TSL | 49.7 dB and 41.0 dB, the same as WebGPU |
+
+| Cost | Black Page | Spike |
+|---|---|---|
+| Haze, one 1080p frame | 2.5 s (Cycles, OptiX, 128 samples, denoised) | about 0.1 s of GPU time (whole frame 114–137 ms) |
+| Final, all 1176 frames | about 1 h after any picture change (engine passes, camera export, haze scene rebuild, haze, composite) | 185 s, one browser tab |
+
+**How it got there:**
+1. **The density field is Cycles' own.** `src/render/cycles_noise.js` ports Blender's Noise Texture from the v5.1.0
+   source (4D Perlin, the lookup3 hash, normalized fBm, distortion) to TSL with 32-bit integer maths. With the final
+   haze settings (`final\atmos_build.py`: fine wisps, scale 3, distortion 0.9, drift and evolve) the spike draws the
+   same wisps in the same places as the Cycles render. This is what made the first try look right.
+2. **The lighting is Cycles' scene, approximated.** Single scattering, Henyey-Greenstein g 0.3. The CRT screen is a
+   20×15 grid of area cells emitting 100× the linear screen image (the CRT shader rendered flat and averaged per cell),
+   placed by fitting the glass mesh's uv to world space. The ringing remote is a point light of P/4π W/sr, plus the
+   LED's teal spill. A half-resolution ray march with 1.5 cm steps runs from the camera to the scene's distance pass,
+   then the haze takes the engine's lens warp, fringe, vignette and squint, as `blender\post.py` did.
+3. **Absolute brightness came out within 6% of Cycles.** One global exposure of 1.055 calibrates it; per-frame levels
+   sit within about ±6% of Cycles' for 80% of frames, with a log-level correlation of 0.998 over 911 frames. The
+   physical units line up without tuning.
+4. **The level curve became baked data.** The compositor scaled each frame's haze toward a target brightness using the
+   haze's measured level averaged over ±0.5 s. That needs neighbouring frames, so it is not a function of t alone.
+   An analysis pass (`VS.measureHaze`) measures every frame and the levels are baked into the document
+   (`look.haze.levels`); `evaluate` computes the gain from them and stays pure.
+5. **Pops are a 2D layer, composited in linear light** like Blender's alpha-over.
+6. **The composite is one GPU pass**: engine picture (with the flat crossfade) → linear + haze × gain → pops
+   alpha-over → sRGB.
+
+**What it cost, attempts and gotchas (about 35 minutes, 02:21–02:55 UTC):**
+- **The pops' jitter is seeded by each pop's index in the list.** The final's pops layer was rendered with the
+  original 17-pop list; when 6 pops were cut, a few frames were re-rendered with the 11-pop list. Matching it needs
+  both seeds, and which frames used which can't be derived from the script: rendering all 177 pop frames both ways
+  against `blender\export\final_pops` showed 174 used the 17-pop seeds and 3 (1097, 1154, 1155) the 11-pop seeds,
+  each an exact match. Seeds should come from stable ids, not list positions.
+- **Silhouettes need a coverage-aware distance pass.** The multisampled distance averaged near and far at the
+  monitor's edge, which drew a dark outline in the haze. The pass now stores (coverage × distance, coverage), and one
+  march mixes the haze up to the surface with the haze past it, as Cycles' many samples per pixel do.
+- **A `sin`-based jitter hash left diagonal hatching** in the haze; a PCG integer hash fixed it.
+- **A TSL `Fn` with a typed layout that read uniforms** was shared by two materials (the screen mesh and the flat
+  screen pass) and produced WGSL that referred to an undeclared uniform block. Building the nodes inside each
+  material fixed it.
+- **The level calibration was redone once**, after the light grid went from 12×9 to 20×15. The finer grid fixed most
+  of the haze over the screen and cut the worst frames' share of pixels off by more than 8/255 from 5% to 1.5%.
+
+**Not at parity, and why:**
+- **Haze just in front of the glass.** Cycles' haze there shows a soft copy of the text; a 20×15 light grid blurs it.
+  This is most of the residual over the screen from 15 s on. A finer grid or a mip-mapped screen texture sampled per
+  cell would close it, at more cost.
+- **Grain.** Cycles' denoised noise and the march's jitter are both random; they can't match pixel for pixel.
+- **Not modelled:** geometry shadowing the haze's light, and attenuation along light paths. Neither showed up in the
+  comparison.
+- **Pops edges** differ slightly: an 8-bit straight-alpha canvas composited in linear here, Blender's premultiplied
+  float there.
+
+**What this means for the doc:**
+- The engine can replace an offline volumetric pass when the look is single-scattering haze: about 20× faster than
+  Cycles here and visually at parity, and it re-renders with the picture instead of after an hour of passes. It was a
+  fragment-shader ray march; WebGPU compute wasn't needed.
+- To match a Blender look, port Blender's procedural textures rather than imitating them: the density field carried
+  over exactly.
+- Analysis passes (levels, auto-exposure, anything that looks at neighbouring frames) should write baked data into
+  the document, so `evaluate` stays pure.
+- The layer stack (§1.9) needs linear-light blending and a haze layer as well as 2D layers.
+- Random seeds should come from stable ids, never list positions.
+
 ## Running the spike
 
 ```
 npm install                        # three 0.186.1, exact pin
-node server/serve.mjs              # http://localhost:8790/src/index.html  (?f=<frame>, ?webgl, ?bg for background tabs, ?gputime)
+node server/serve.mjs              # http://localhost:8790/src/index.html  (?f=<frame>, ?look=engine, ?webgl, ?bg for background tabs, ?gputime)
 node tools/import_blackpage.mjs    # rebuild scenes/black_page.scene.json from opener_final.json + data/engine_dump.json
 node tools/check_camera.mjs        # time core vs cams_final.json
 node tools/compare.mjs <run> [frames]       # side-by-side + difference images (ImageMagick)
 node tools/metrics_all.mjs <run>            # per-frame metrics for a whole run
 node tools/build_artifact.mjs      # dist/artifact (gitignored: holds copies of the models)
+node tools/bake_haze_levels.mjs    # after VS.measureHaze(frames): calibrate and bake haze levels into data/haze_levels.json
 ```
 
-In the page: `await VS.exportFrames([...frames], '<run>')` writes PNGs to
+The final master is decoded to `ref_final\` with ffmpeg (BT.709, limited range); `REF=<dir>` points the comparison
+tools at it. In the page: `await VS.exportFrames([...frames], '<run>')` writes PNGs to
 `G:\Claude\Virtual Legacy\Channel\Virtual Shot spike\<run>\`. `tools/dump_engine.js` runs inside the Black Page page
 (`/bp/final/test.html` on the same server) and writes `data/engine_dump.json`.
 
@@ -290,7 +375,8 @@ In the page: `await VS.exportFrames([...frames], '<run>')` writes PNGs to
 | `scenes/black_page.scene.json` | The scene document |
 | `src/core/` | Time core: tracks and curves, `evaluate(doc, t, geo)` |
 | `src/layers/chat2d.js` | The chat as a 2D layer |
-| `src/render/` | three.js renderer: TSL materials, lens and DOF passes |
+| `src/render/` | three.js renderer: TSL materials, lens and DOF passes, haze (`haze.js`, `cycles_noise.js`), final composite |
+| `src/layers/pops2d.js` | The pops as a 2D layer |
 | `src/app.js`, `src/index.html` | Viewer: scrub, play, export hooks |
 | `src/artifact.html` | The artifact page |
 | `server/serve.mjs` | Local server: read-only mounts of the Black Page folder, the PSX pack and the Wii Remote; PNG writes to G: |

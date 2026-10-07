@@ -2,6 +2,7 @@
 // Headless hooks on window.VS for frame export (POST /save/ with retries, like Black Page's BPX).
 import { evaluate, indexDoc } from './core/evaluate.js';
 import { ChatLayer } from './layers/chat2d.js';
+import { PopsLayer } from './layers/pops2d.js';
 import { ShotRenderer, assetUrl } from './render/shot_renderer.js';
 
 const $ = id => document.getElementById(id);
@@ -21,79 +22,61 @@ async function boot() {
   const chat = new ChatLayer(chatDef.script, { fontFamily: chatDef.fontFamily, glass: ix.glass, cut: doc.cut, fps });
   const tall = document.createElement('canvas'); tall.width = 1920; tall.height = chat.TEX.th;
   const tctx = tall.getContext('2d');
-  const flat = $('flat'), fctx = flat.getContext('2d');
-  const shot = await new ShotRenderer($('gpu'), doc, { forceWebGL: params.has('webgl'), trackTimestamp: params.has('gputime') }).init(tall);
+  const flat = document.createElement('canvas'); flat.width = 1920; flat.height = 1080; const fctx = flat.getContext('2d');
+  const popsCanvas = document.createElement('canvas'); popsCanvas.width = 1920; popsCanvas.height = 1080; const pctx = popsCanvas.getContext('2d');
+  const pops = new PopsLayer(doc.events.pops, { fontFamily: chatDef.fontFamily, cut: doc.cut, fps, altFrames: doc.events.popsAltFrames });
+  const shot = await new ShotRenderer($('gpu'), doc, { forceWebGL: params.has('webgl'), trackTimestamp: params.has('gputime') }).init(tall, { flatCanvas: flat, popsCanvas });
   const chaosOf = st => st.chaos;
   $('info').textContent = `${doc.name} · three r186 · ${shot.backend} · ${doc.objects.length} objects, ${doc.tracks.length} tracks`;
   $('scrub').max = last;
 
   let state = null;
-  /** Render frame f: evaluate, draw the chat layer, render 3D, set the flat overlay. Returns the state. */
+  // ?look=engine: the engine picture alone (the first parity target); default: the final look (haze + pops), composited
+  // on the GPU the way Black Page's Blender compositor did it.
+  const LOOK = params.get('look') || 'final';
+  /** Render frame f: evaluate, draw the 2D layers, render 3D + haze, composite to the canvas. Returns the state. */
   function renderFrame(f) {
     const t = f / fps, st = state = evaluate(doc, t, shot.geo, ix);
-    if (st.flat.before) {
-      chat.render(fctx, t, chaosOf(st), { geom: 'flat' });
-      $('gpu').style.visibility = 'hidden'; flat.style.opacity = 1;
-    } else {
-      chat.render(tctx, t, chaosOf(st), { geom: 'tall' });
-      shot.render(st);
-      $('gpu').style.visibility = 'visible';
-      if (st.flat.overlay > 0) chat.render(fctx, t, chaosOf(st), { geom: 'flat', chrome: 0 });
-      flat.style.opacity = st.flat.overlay;
-    }
+    const needFlat = st.flat.before || st.flat.overlay > 0;
+    if (needFlat) chat.render(fctx, t, chaosOf(st), st.flat.before ? { geom: 'flat' } : { geom: 'flat', chrome: 0 });
+    if (!st.flat.before) chat.render(tctx, t, chaosOf(st), { geom: 'tall' });
+    const anyPops = LOOK === 'final' && pops.render(pctx, t);
+    shot.render(st, { final: LOOK === 'final', flat: needFlat, pops: anyPops });
     $('time').textContent = `f ${f} · ${t.toFixed(3)} s`; $('scrub').value = f;
-    const ref = $('ref'); if (ref && !ref.hidden) ref.src = `/bp/blender/export/final_engine/f${String(f).padStart(5, '0')}.png`;
+    const ref = $('ref'); if (ref && !ref.hidden) ref.src = LOOK === 'final' ? `/bp-final-ref/f${String(f).padStart(5, '0')}.png` : `/bp/blender/export/final_engine/f${String(f).padStart(5, '0')}.png`;
     return st;
   }
-  /** The composited frame as a canvas (3D pixels read back, flat layer crossfaded on top), like BP.frame(). */
-  const out = document.createElement('canvas'); out.width = 1920; out.height = 1080; const octx = out.getContext('2d', { willReadFrequently: true });
-  async function composite() {
-    if (state.flat.before) { octx.clearRect(0, 0, 1920, 1080); octx.drawImage(flat, 0, 0); return out; }
-    const px = await shot.readPixels(); octx.putImageData(new ImageData(px, 1920, 1080), 0, 0);
-    if (state.flat.overlay > 0) { octx.globalAlpha = state.flat.overlay; octx.drawImage(flat, 0, 0); octx.globalAlpha = 1; }
-    return out;
-  }
-  /** Composite straight from the WebGPU canvas, in the same task as the render (no GPU readback, no JS encoding):
-   *  the old engine's BP.frame() path, which exported 3x faster than readback + CompressionStream. */
-  function compositeFromCanvas() {
-    octx.globalAlpha = 1; octx.clearRect(0, 0, 1920, 1080);
-    if (state.flat.before) { octx.drawImage(flat, 0, 0); return out; }
-    octx.drawImage($('gpu'), 0, 0);
-    if (state.flat.overlay > 0) { octx.globalAlpha = state.flat.overlay; octx.drawImage(flat, 0, 0); octx.globalAlpha = 1; }
-    return out;
-  }
-  /** Raw RGBA8 of the composited frame (top row first). */
-  async function compositePixels() {
-    if (!state.flat.before && !(state.flat.overlay > 0)) return shot.readPixels();
-    return (await composite()).getContext('2d').getImageData(0, 0, 1920, 1080).data;
-  }
-  /** PNG image data for RGBA8 pixels: Sub-filtered rows, zlib-compressed by the browser (the server adds the chunks). */
-  async function pngIdat(px, w = 1920, h = 1080) {
-    const stride = w * 4, raw = new Uint8Array((stride + 1) * h);
-    for (let y = 0; y < h; y++) { const o = y * (stride + 1), r = y * stride; raw[o] = 1;
-      raw[o + 1] = px[r]; raw[o + 2] = px[r + 1]; raw[o + 3] = px[r + 2]; raw[o + 4] = px[r + 3];
-      for (let i = 4; i < stride; i++) raw[o + 1 + i] = px[r + i] - px[r + i - 4]; }
-    return new Response(new Blob([raw]).stream().pipeThrough(new CompressionStream('deflate'))).arrayBuffer();
-  }
-  const post = async (name, body, rgba = false) => {
-    const url = rgba ? `/save-idat/${name}?w=1920&h=1080` : '/save/' + name;
+  /** The finished frame, copied from the WebGPU canvas in the same task as the render (the old engine's BP.frame()
+   *  path: no GPU readback, no JS encoding). */
+  const out = document.createElement('canvas'); out.width = 1920; out.height = 1080; const octx = out.getContext('2d');
+  function composite() { octx.clearRect(0, 0, 1920, 1080); octx.drawImage($('gpu'), 0, 0); return out; }
+  const post = async (name, body) => {
     for (let i = 0; ; i++) {
-      try { const r = await fetch(url, { method: 'POST', body }); if (r.ok) return; throw new Error('HTTP ' + r.status); }
+      try { const r = await fetch('/save/' + name, { method: 'POST', body }); if (r.ok) return; throw new Error('HTTP ' + r.status); }
       catch (e) { if (i >= 4) throw e; await new Promise(r => setTimeout(r, 1000 * (i + 1))); }
     }
   };
   let exporting = false;
-  async function exportFrames(frames, dir, { via = 'canvas' } = {}) {
+  async function exportFrames(frames, dir) {
     if (exporting) throw new Error('an export is already running'); exporting = true;
     const t0 = performance.now(); let n = 0;
-    const inflight = new Set();   // up to 4 uploads in flight; the server encodes PNGs in parallel
+    const inflight = new Set();   // up to 4 uploads in flight
     try { for (const f of frames) { renderFrame(f); const name = `${dir}/f${String(f).padStart(5, '0')}.png`;
-      const body = via === 'canvas' ? await (await fetch(compositeFromCanvas().toDataURL('image/png'))).blob() : await pngIdat(await compositePixels());
-      const p = post(name, body, via !== 'canvas').finally(() => inflight.delete(p)); inflight.add(p);
+      const body = await (await fetch(composite().toDataURL('image/png'))).blob();
+      const p = post(name, body).finally(() => inflight.delete(p)); inflight.add(p);
       if (inflight.size >= 4) await Promise.race(inflight); n++;
       if (n % 20 === 0) $('status').textContent = `exported ${n}/${frames.length}`; } await Promise.all(inflight); } finally { exporting = false; }
     const s = (performance.now() - t0) / 1000; $('status').textContent = `exported ${n} frames in ${s.toFixed(1)} s`;
     return { n, seconds: s };
+  }
+  /** Haze analysis pass: the mean level of each frame's haze (ungained, at exposure 1), like levels.txt. */
+  async function measureHaze(frames, name = 'data/haze_levels_raw.json') {
+    const out = {}; const t0 = performance.now();
+    for (const f of frames) { const st = renderFrame(f); if (st.haze && st.haze.gain > 0) out[f] = await shot.hazeLevel(st);
+      if (f % 50 === 0) $('status').textContent = `measured ${f}`; }
+    await post(name, JSON.stringify(out));
+    $('status').textContent = `measured ${frames.length} frames in ${((performance.now() - t0) / 1000).toFixed(1)} s`;
+    return out;
   }
 
   // transport
@@ -103,8 +86,8 @@ async function boot() {
   $('scrub').oninput = () => { if (exporting) return; cur = +$('scrub').value; renderFrame(cur); };
   if ($('showRef')) $('showRef').onchange = e => { $('ref').hidden = !e.target.checked; renderFrame(cur); };
 
-  window.VS = { doc, shot, chat, evaluate: t => evaluate(doc, t, shot.geo, ix), renderFrame, composite, exportFrames,
-    frameDataURL: async () => (await composite()).toDataURL('image/png'), backend: shot.backend };
+  window.VS = { doc, shot, chat, pops, evaluate: t => evaluate(doc, t, shot.geo, ix), renderFrame, composite, exportFrames, measureHaze,
+    frameDataURL: () => composite().toDataURL('image/png'), backend: shot.backend, look: LOOK };
   cur = +(params.get('f') || 300); renderFrame(cur);
   window.VS_READY = true;
   if ($('diag')) diagnostics(shot).then(d => { window.VS_DIAG = d;
