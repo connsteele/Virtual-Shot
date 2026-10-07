@@ -76,6 +76,7 @@ the newcomer. When a WebSocket client leaves, the others get `{ "type": "bye", "
 | `p` | position in the sender's conventions |
 | `q` | rotation `[x, y, z, w]` in the sender's coordinates, **or** `r`: Unreal FRotator `[pitch, yaw, roll]` degrees (`conventions` with `rot: "ue"`) |
 | `fov` | field of view in degrees, on the axis the conventions name (`vertical` or `horizontal`) |
+| `cut` | optional `true` on the first sample after a camera cut or teleport: receivers never interpolate or extrapolate across it |
 | `lens` | optional: `mm` + `sensor` [w, h] (used when `fov` is missing), `focus` distance (m), `fstop` |
 
 ### `event`

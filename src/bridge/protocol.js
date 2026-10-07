@@ -110,6 +110,7 @@ export function slerp(a, b, u) {
 }
 /** Pose between two canonical samples at sender time t (u may go past 1 to extrapolate). */
 export function blend(a, b, t) {
+  if (b.cut) return t >= b.ts ? { ...b, ts: t } : { ...a, ts: t };   // a camera cut: never blend across it (hold, then jump)
   const u = b.ts > a.ts ? (t - a.ts) / (b.ts - a.ts) : 1;
   return { ts: t, p: a.p.map((v, i) => lerp(v, b.p[i], u)), q: slerp(a.q, b.q, u), fov: lerp(a.fov ?? b.fov, b.fov ?? a.fov, u), f: b.f, src: b.src, id: b.id, lens: b.lens };
 }

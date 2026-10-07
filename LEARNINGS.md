@@ -606,6 +606,166 @@ load (three's `compileAsync` covers scene materials but not full-screen passes).
 - The default look is unchanged by all of this: frames 120/300/720/1100 are bit-identical to before the pixel look
   (PSNR infinite).
 
+## Spike: Engine bridge passthrough (branch `spike-engine-bridge`)
+
+The architecture sketch's "game link": a local bridge streams a live camera (position, rotation, FOV, optional lens)
+and chosen events from another program into Virtual Shot, which draws its own scene from that camera in step so its
+layers line up with game footage. The same format also carries Virtual Shot's shot camera out to Blender or Unreal.
+
+**What was built**
+- `server/bridge.mjs`: a dependency-free relay on 127.0.0.1:8799. Hand-rolled RFC 6455 WebSocket (about 40 lines on
+  the `node:http` upgrade) plus a UDP JSON port for senders that can't do WebSocket easily (Python, C++ mods), `/status`,
+  an optional JSONL log. It stamps `rx`, converts every `cam` message from the sender's declared conventions to canonical
+  (glTF: metres, Y up, camera looks −Z, vertical FOV), and forwards to each client in **that client's** declared
+  conventions. Hellos are replayed to late joiners.
+- `src/bridge/protocol.js` (isomorphic: bridge, senders, editor): conventions presets `gltf`, `blender`, `unreal`
+  (cm, Z up, left-handed, FRotator, horizontal FOV), `unity`, plus overrides; `toCanonical` / `fromCanonical`;
+  `SampleBuffer` (play-out: latest, fixed-delay interpolation, capped extrapolation; sender clock mapped by the smallest
+  receive−send offset, no clock sync); alignment (`alignTo`, `applyAlign`). The format is documented in
+  **`docs/engine-bridge.md`** (`hello` naming the source and its conventions, `cam` with sender `ts` and frame `f`,
+  `event`, `ping`, a `cut` flag).
+- Editor: a **Live ▾** popover next to Show (`src/editor/live.js`). Nothing connects until Connect; off by default.
+  "Shot camera follows the stream" turns each drawn frame's stream pose into rig values (`poseToRig`, the exact inverse
+  of `camPose`, new in `evaluate.js`) passed to `evaluate(doc, t, geo, ix, over)` as `over.rig`: the camera-kit
+  pattern, document untouched. Also: play-out mode, delay, Play/Render quality, "Keep the shot's lens warp" (off: a
+  game's straight lens), Align to shot camera, Record / Cancel, and "Send the shot camera out" (the reverse direction).
+- Record turns the stream into keys: the raw samples are kept with their sender times; Stop resamples them once per
+  shot frame (by **frame number** when the source says `timebase: "fixed"`, so a send hitch can't stretch the take)
+  and writes them through the new named command `writeCameraTake` (Bézier thinning with `fit.js` copied from
+  `spike-camera-kit`, one undo; stream events become `doc.events.markers`). `evaluate()` stays pure in t.
+- Rig: a `roll` channel (applied only when non-zero); the target distance uses |dist| so a camera behind the glass
+  plane still looks forward. The inspector shows Roll.
+- Senders: `tools/sim_game.mjs` (a simulated game in Unreal conventions: frame-time jitter σ≈1.2 ms, 2–6 ms between
+  sampling and sending, 50–120 ms hitches every ~4 s); `tools/blender_bridge.py` (stdlib only: stream the active
+  camera from your own Blender on a timer; a background demo that builds a scratch scene; a background receiver that
+  keys a camera from Virtual Shot). Tests: `tools/live_test.js`, `tools/live_bench.mjs`, `tools/blender_align.mjs`,
+  `tools/reverse_test.mjs`, `tools/grab_frames.mjs`.
+
+**How to turn it on:** `node server/bridge.mjs`, a sender (`node tools/sim_game.mjs`, or run `tools/blender_bridge.py`
+in Blender), then in the editor Live ▾ → Connect → tick "Shot camera follows the stream".
+
+**Headline findings**
+- **The coordinate chain is exact.** Blender 5.1 (background, scratch scene) streamed 180 frames of an animated camera
+  (lens 24–40 mm, roll up to 6°) over UDP; the editor recorded them as keys. Ten known scene points (glass corners, LED,
+  polaroid, tape, Wii, keyboard) projected by Virtual Shot from the unthinned samples land within **0.001 px** of
+  Blender's own `world_to_camera_view` at 1920×1080. Through the thinned keys: median 0.38 px, max 3.8 px at the
+  default tolerance (78 keys for 180 frames); median 0.07, max 0.76 px at tolerance ×0.1 (150 keys). Blender's marker
+  render overlaid on Virtual Shot frames lines up (`engine_bridge\blender\overlay_sheet.png`).
+- **The reverse direction is exact too:** the editor published its shot camera for 120 frames, a background Blender
+  received it in Blender conventions and keyed a camera (`blender_reverse\received_take.blend`): position error 0,
+  angle 1.5e-6°, FOV 0.
+- **Transport is not the problem.** Sender→bridge→receiver is under 1 ms on one machine for WebSocket and UDP alike
+  (bridge→editor p95 1.6–2.0 ms). The measured sender-to-editor 4.8 ms p50 is mostly the simulated game's own 2–6 ms
+  between sampling the camera and sending it. Different processes' clocks differ by about ±1 ms
+  (`performance.timeOrigin`), which shows up as small negative latencies; the min-offset mapping absorbs it.
+- **Play-out decides smoothness** (60 Hz sender with hitches, 60 Hz display, headless, Play quality;
+  `research\live_bench.json`):
+
+  | Look / mode | Pose age when the GPU finishes, p50 / p95 | Judder: lag σ / max dev (ms) | Error vs a smooth delayed path, p95 / max (mm) |
+  | --- | --- | --- | --- |
+  | off, latest sample | 14.3 / 20.5 ms | 4.6 / 11.8 | 1.3 / 3.6 |
+  | off, interpolate 20 ms | 25.2 / 28.1 | 0.4 / 8.2 | 0.03 / 1.3 |
+  | off, interpolate 50 ms | 54.9 / 58.2 | 1.0 / 16.3 (a hitch longer than the delay: held) | 0.02 / 5.2 |
+  | off, interpolate 100 ms | 104.8 / 108.0 | 0.2 / 5.4 | 0.02 / 0.6 |
+  | off, extrapolate (cap 50 ms) | 4.7 / 7.8 | 0.3 / 6.2 | 0.07 / 1.4 |
+  | full look, latest | 16.7 / 25.5 | 5.6 / 11.3 | 3.0 / 4.5 |
+  | full look, interpolate 50 ms | 57.9 / 60.9 | 0.2 / 4.7 | 0.02 / 0.5 |
+  | full look, extrapolate | 8.0 / 11.7 | 0.5 / 10.7 | 0.09 / 3.7 |
+  | full look, **Render quality**, interpolate 50 ms | 580 / 1041 | 117 / 388 | 42 / 169 |
+
+  "Latest" judders (σ 5 ms of time error, a third of a frame) because the sample and display clocks beat and hitches
+  freeze it. Interpolating behind a fixed delay is smooth as long as the delay covers the hitches (50 ms let 50–120 ms
+  hitches through as holds; 80–100 ms didn't). Extrapolation was the best compromise on this smooth path (8 ms,
+  σ 0.5 ms), but it overshoots at stops and must never cross a cut: added a `cut: true` sample flag that blocks blending.
+  30 Hz sender: latest draws only 30 fps (σ 5 ms); interpolate 80 ms is clean (max dev 0.2 ms); extrapolate 8.4 ms with
+  max dev 2.4 ms. 144 Hz sender: latest σ 3.1 ms; extrapolate 8.9 ms, σ 0.1 ms (`research\live_bench_30hz.json`,
+  `live_bench_144hz.json`).
+- **The full look costs ~3 ms of GPU per live frame** (GPU done after submit: 2.4 ms look off, 5.5 ms full look, Play
+  quality; CPU per frame 1.0–1.1 ms), so a 60 fps live camera fits easily. **Render quality can't run live**: 525 ms a
+  frame (haze march), 80 frames in 6 s, and it blocks the page's main thread so camera messages wait up to 420 ms to be
+  read. Live is Play quality; frame-exact Render quality comes from Record → keys → Render.
+- **Record by frame number for fixed-step sources** (emulators, Blender): the take maps 1:1 to source frames (Blender
+  f1–180 → shot f300–479, checked per frame), immune to send jitter. A variable-step game falls back to sender times.
+  The thinning tolerance in rig units is scene-relative: 0.002 glass widths is 3 px on the keyboard 0.3 m from the
+  camera. A screen-space tolerance (reproject a few scene points) would be better.
+- Depth of field and haze keyed for the document's camera don't follow a live camera: at f720 the focus keys aim at the
+  Wii remote, so the live view of the CRT came out fully blurred (`engine_bridge\live_f720.png`). A real game link
+  needs the stream's `lens.focus`/`fstop` mapped onto focus, or DOF off for compositing plates.
+
+**Default look:** unchanged. Frames 300 and 720 at Render quality are bit-identical to `spike` (0 differing pixels),
+checked after the evaluate change and again at the end (`engine_bridge\ref_spike`, `bitcheck`, `bitcheck_final`).
+
+**Gotchas**
+- Windows timers tick at 15.6 ms: a Node sender pacing with setTimeout ran at 50 Hz with 16 ms extra latency. Sleep
+  coarsely, then yield with setImmediate (`sim_game.mjs`). Blender's Python 3.13 has a precise `time.time()`.
+- Turn Nagle off on the bridge's sockets (`setNoDelay`), or small messages can wait ~40 ms.
+- Epoch-millisecond times (1.8e12) lose ~1e-4 ms to rounding: frame maths on them needs an epsilon (a take lost its last
+  frame to `floor(178.99998)`).
+- Headless Chrome fell back to WebGL2 once while another agent was using the GPU (the WebGPU adapter request failed);
+  check `E.shot.backend` in tests (`grab_frames.mjs` prints it).
+- Headless has no vsync: the live loop paces itself to 60 Hz with its own gate on a 4 ms setTimeout, so display-interval
+  numbers are approximate; Connor's visible window adds one display frame plus compositor latency.
+
+**GPU lock:** waited about 25 min for `rt-research` (11:29–11:49 UTC). The 60 Hz matrix started with nvidia-smi at 38%
+and no lock holder (an unlocked GPU user); the functional test before it ran during `particles-research`'s timings
+(GPU done 88 ms after submit; discarded). The 30/144 Hz runs and the reverse test ran clean (0% after).
+
+**Frames and data:** `G:\Claude\Virtual Legacy\Channel\Virtual Shot spike\engine_bridge\` (`blender\`: alignment
+`overlay_sheet.png`, `align_report_tol*.json`, `blender_truth.json`; `blender_reverse\`; `research\live_bench*.json`;
+`live_menu.png`).
+
+**Look presets:** the bridge only drives the camera, so any `look.style` preset applies unchanged. For compositing over
+game footage a preset should be able to say "plate mode": lens warp, DOF and haze off (or driven by the stream's
+lens), which the live default of a straight "game lens" starts.
+
+### Research pass: how games and tools could feed it, and the reverse
+
+What each source would take, roughly cheapest first. Single-player/offline only; a separate mod or script per game.
+
+| Source | How the camera gets out | Effort | Notes |
+| --- | --- | --- | --- |
+| **Blender** | `tools/blender_bridge.py` (done): `matrix_world` + lens on a 60 Hz timer, UDP | done | Exact both ways. Also the easiest way to author game-like test paths |
+| **Unreal (sender)** | Editor Python, or a tiny actor reading `PlayerCameraManager` (`GetCameraViewPoint`, FOV) → UDP JSON in `unreal` conventions | low | The format already speaks FRotator, cm and horizontal FOV |
+| **Unreal (receiver)** | Live Link: a custom Live Link source, or the built-in **LiveLinkFreeD** source fed by a FreeD encoder on our side, driving a CineCamera | low–medium | FreeD is the cheapest way into UE without writing a plugin |
+| **Unity games** | **BepInEx** plugin: `Camera.main.transform` + `fieldOfView` each frame → UDP, `unity` conventions | low per game | IL2CPP games need Il2CppInterop |
+| **Unreal games** | **UE4SS** (Lua or C++ mod): read `PlayerCameraManager` on tick → UDP (Lua has no sockets: a C++ mod or a socket DLL) | medium per game | UE4SS's live property viewer helps find the camera |
+| **Dolphin (GC/Wii)** | Scripting forks (Felk's **Python** fork; the **Lua** fork by dragonbane0, ported by Tales-Carvalho): read the game's camera/view matrix from RAM each frame | medium per game | Free Look moves Dolphin's render camera, not the game's; the in-RAM camera is what matches the game's frames. Fixed 60/50 Hz: `timebase: fixed` |
+| **PCSX2 / DuckStation** | **PINE** IPC: an external Python/Node process reads RAM each frame; PCSX2's debugger to find the camera | medium per game | No mod inside the emulator |
+| **RPCS3** | Debugger + memory reading (no PINE); Cheat Engine can attach | high | Big-endian PPU RAM; finding the camera is the work |
+| **Any PC game** | **Cheat Engine** to find the camera struct (position, rotation matrix or angles, FOV), then a small reader process (ReadProcessMemory) streaming it | medium–high per game | What IGCS-style camera tools do; offsets break with patches |
+| **ReShade add-ons** | Add-on API (the full add-on build, single-player only): the depth buffer via Generic Depth, and the **IGCS Connector** add-on exposes camera data from IGCS camera tools | medium | Depth would also give Virtual Shot occlusion against the game (depth-aware compositing) |
+| **Source / Skyrim** | Console (`getpos`/`setpos`, `tfc`), SourceMod plugins, SKSE | medium | Units: Source inches (0.0254 m); Skyrim units ≈ 0.01428 m |
+| **Camera tracking** | **FreeD** (29-byte UDP D1 packet: pitch/yaw/roll, X/Y/Z mm, zoom/focus encoder counts) or OSC | low | Zoom/focus are raw counts: needs a lens calibration table to become FOV |
+
+**What any game takes:** (1) find where its camera lives (engine API in moddable engines; RAM search in emulated or
+closed games), (2) a per-frame hook that sends one `cam` message with the game's frame number, (3) a conventions entry
+(units, up axis, handedness, FOV axis, what its angles mean), (4) an alignment of the game's world to the scene (built
+to match, then a fixed transform), (5) a `cut` flag on camera cuts. Recording the game's own frame counter alongside the
+captured video is what lets a take line up with footage frame for frame.
+
+**Recommendations for the real build**
+- Keep the bridge a separate small process (it becomes the Electron app's main process later); UDP JSON as the
+  mod-facing transport (any language, no handshake), WebSocket for the browser.
+- Default play-out: interpolate with a delay of ~1.5× the worst expected hitch (80–100 ms) for watching; extrapolate
+  (cap 50 ms) for steering live; latest only for debugging. Show the measured lag in the HUD.
+- Record by source frame numbers whenever the source is fixed-step; keep the raw stream with the take (~300 bytes a
+  frame) so it can be re-thinned; switch thinning to a screen-space tolerance.
+- Receive in a Worker (or the Electron main process) so a heavy frame can't delay incoming samples.
+- Map the stream's lens (focus, f-stop) onto the camera's focus, and add a "plate mode" look preset for compositing.
+- Add a FreeD encoder to the bridge for Unreal Live Link and hardware, and a decoder for tracking input.
+- Open questions for Connor: which game first (Dolphin titles fit Virtual Legacy best, and need a per-game RAM camera
+  finder); whether game footage gets captured with a frame counter (overlay or metadata).
+
+Sources: [Dolphin free look](https://www.pcgamesn.com/emulation/dolphin-free-look),
+[Dolphin with Python scripting (TASVideos)](https://tasvideos.org/Forum/Posts/499001),
+[PCSX2 PINE IPC](https://wiki.pcsx2.net/IPC_Protocol), [pcsx2-memory-accessor](https://pypi.org/project/pcsx2-memory-accessor/),
+[ReShade: providing game data](https://reshade.me/forum/addons-discussion/8442-providing-game-data-to-reshade),
+[IGCS Connector](https://github.com/FransBouma/IgcsConnector), [FreeD packet (stvmyr/freeD)](https://github.com/stvmyr/freeD),
+[FreeD Live Link plugin](https://github.com/max-verem/FreeDLiveLink),
+[Unreal Live Link](https://dev.epicgames.com/documentation/en-us/unreal-engine/live-link-in-unreal-engine),
+[LiveLinkFreeD source](https://dev.epicgames.com/documentation/unreal-engine/API/Plugins/LiveLinkFreeD/FLiveLinkFreeDSource),
+[APlayerCameraManager::GetCameraViewPoint](https://dev.epicgames.com/documentation/unreal-engine/API/Runtime/Engine/APlayerCameraManager/GetCameraViewPoint).
+
 ## Running the spike
 
 ```
