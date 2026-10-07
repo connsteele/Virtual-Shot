@@ -4,6 +4,7 @@ import * as THREE from 'three/webgpu';
 import { mrt, output, vec2, vec4, positionWorld, cameraPosition, uniform, uv, Fn } from 'three/tsl';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { bodyMaterial, crtMaterial, glowMaterial, makeLightUniforms } from './materials.js';
+import { ps1Material, makePs1Uniforms } from './looks/ps1.js';
 import { makePost, makeOutline } from './post.js';
 import { makeHaze } from './haze.js';
 import { makeComposite, makeHazeMeter, makeEmitAverage, makeAreaUpscale, makeBloom, flatScreenQuad } from './final_comp.js';
@@ -29,6 +30,11 @@ export const PIXEL_LOOK = { lines: 480, output: [3840, 2160], msaa: false, bits:
 // per channel with an ordered dither), sharpScreen (the CRT's picture over the chunky frame at output resolution, true, or
 // at that many lines, e.g. 1080), outlines (pixel outlines on silhouettes and creases), stable (pixel-stable camera),
 // bands (banded lighting, steps per doubling; 0 = smooth), bloom (Wii-era bloom strength; 0 = none).
+/** Material sets a look style can switch the lit surfaces to: name -> (renderer, light uniforms, bodyMaterial options) -> material.
+ *  'default' is the Black Page body shader each surface is built with. Other looks register theirs here. */
+export const MATERIAL_SETS = {
+  ps1: (sr, U, o) => ps1Material(U, sr.ps1U ||= makePs1Uniforms(), o),
+};
 const m4 = a => new THREE.Matrix4().fromArray(Array.from(a));
 const v3 = a => new THREE.Vector3(...a);
 
@@ -60,6 +66,23 @@ export class ShotRenderer {
     if (ct.generateMipmaps !== mip) { Object.assign(ct, { generateMipmaps: mip, minFilter: mip ? THREE.LinearMipmapLinearFilter : THREE.LinearFilter }); ct.dispose(); ct.needsUpdate = true; }
     this.crt.userData.S.mip.value = mip ? 1 : 0;
     this.renderer.setSize(ow, oh, false);
+  }
+
+  /** Apply a resolved look style (looks/styles.js resolveStyle): the chunky-pixel settings and the material set. */
+  setStyle(style) {
+    const pixel = style.pixel ? { ...PIXEL_LOOK, ...style.pixel } : null, key = JSON.stringify(pixel);
+    if (key !== this.pixelKey) { this.setPixelLook(pixel); this.pixelKey = key; }
+    this.setMaterialSet(style.materials || 'default');
+    if (this.ps1U && style.ps1) for (const k of ['snap', 'affine', 'gouraud']) this.ps1U[k].value = style.ps1[k] ?? 1;
+    this.style = style;
+  }
+  /** Switch every lit surface (models and cards, not the CRT or glows) to a material set; built on first use. */
+  setMaterialSet(name) {
+    if (name === this.materialSet) return;
+    for (const b of this.bodies) { const mats = b.mesh.userData.mats;
+      if (!mats[name]) mats[name] = MATERIAL_SETS[name] ? MATERIAL_SETS[name](this, this.U, b.opts) : mats.default;
+      b.mesh.material = mats[name]; }
+    this.materialSet = name;
   }
 
   /** chatCanvas: the tall chat texture; flatCanvas / popsCanvas: the full-frame chat and pops layers (composited here). */
@@ -101,7 +124,8 @@ export class ShotRenderer {
       return loader.parseAsync(bin.buffer, '');
     };
     const ledRect = ix.obj.led.texelRect, ledTargets = new Set(ix.obj.led.appliesTo || []);
-    this.ledParts = []; this.placed = {};
+    this.ledParts = []; this.placed = {}; this.bodies = []; this.materialSet = 'default';
+    const body = (mesh, opts) => { mesh.material = bodyMaterial(U, opts); mesh.userData.mats = { default: mesh.material }; this.bodies.push({ mesh, opts }); };
     for (const o of doc.objects) {
       if (o.type !== 'model') continue;
       const gltf = await loadModel(doc.assets[o.asset]);
@@ -141,7 +165,7 @@ export class ShotRenderer {
         }
         const isLed = ledRe && ledRe.test(nodeName);
         const ov = isLed ? uniform(new THREE.Vector4(0, 0, 0, 0)) : null;
-        mesh.material = bodyMaterial(U, { map: src.map, emissiveMap: src.emissiveMap, ledRect: ledTargets.has(o.id) ? ledRect : [2, 2, 2, 2], ov });
+        body(mesh, { map: src.map, emissiveMap: src.emissiveMap, ledRect: ledTargets.has(o.id) ? ledRect : [2, 2, 2, 2], ov });
         if (isLed) this.ledParts.push({ mesh, ov, c0: a0.map((v, c) => (v + a1[c]) / 2) });
       }
       const M = Array.from(root.matrix.elements), ctrLocal = mn.map((v, c) => (v + mx[c]) / 2);
@@ -160,7 +184,7 @@ export class ShotRenderer {
     for (const o of doc.objects.filter(o => o.type === 'card')) {
       const im = await loadImage(assetUrl(doc.assets[o.texture])), tx = new THREE.Texture(im);
       Object.assign(tx, { flipY: false, generateMipmaps: false, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, colorSpace: THREE.NoColorSpace, needsUpdate: true });
-      const mesh = new THREE.Mesh(quad, bodyMaterial(U, { map: tx, scMul: 1.15, blMul: o.brightness || 1.4, rawLed: true }));
+      const mesh = new THREE.Mesh(quad); body(mesh, { map: tx, scMul: 1.15, blMul: o.brightness || 1.4, rawLed: true });
       mesh.matrixAutoUpdate = false; mesh.matrix.copy(m4(trsOf(o.transform))); mesh.userData.docId = o.id; this.placed[o.id] = mesh; scene.add(mesh);
     }
     // glows: four for the ringing LEDs, one for the power LED
@@ -345,6 +369,7 @@ export class ShotRenderer {
     // scene pass: the buffer grows with the lens overscan so the centre stays sharp
     const scale = c.k > 1e-4 ? Math.min(2, Math.ceil(c.ov * 2) / 2) : 1, sw = Math.round(this.W * scale), sh = Math.round(this.H * scale);
     if (this.sceneRT.width !== sw || this.sceneRT.height !== sh) this.sceneRT.setSize(sw, sh);
+    if (this.ps1U) this.ps1U.res.value.set(sw, sh);   // PS1 vertex snapping: the scene buffer's pixel grid
     this.mark('scene'); r.setMRT(this.sceneMRT); r.setRenderTarget(this.sceneRT); r.clear(); r.render(this.scene, cam); r.setMRT(null);
     // lens + circle of confusion
     const P = post.U, F = st.focus, D = !!(show.dof && F && (F.px > 0 || F.edge > 0 || F.spot > 0));

@@ -46,6 +46,12 @@ input[type=number] { font-variant-numeric: tabular-nums; }
 .vp-stage { position: relative; aspect-ratio: 16 / 9; width: min(100cqw, 100cqh * 16 / 9); max-width: 100%; background: #000; }
 .vp-stage canvas, .vp-stage svg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
 .vp-stage svg { pointer-events: none; }
+/* A/B wipe: style B right of the line, the document's style (A) left of it */
+#abWipe { pointer-events: none; }
+#abHandle { position: absolute; top: 0; bottom: 0; width: 16px; margin-left: -8px; cursor: ew-resize; touch-action: none; }
+#abHandle::before { content: ''; position: absolute; left: 7px; top: 0; bottom: 0; width: 2px; background: rgba(236, 239, 235, .8); box-shadow: 0 0 3px #000; }
+#abHandle span { position: absolute; bottom: 8px; font-size: 12px; white-space: nowrap; color: #ecefeb; background: rgba(0, 0, 0, .6); padding: 2px 6px; border-radius: 3px; pointer-events: none; }
+#abLabelA { right: 14px; } #abLabelB { left: 14px; }
 .vp-hud { position: absolute; left: 8px; top: 6px; display: flex; gap: 10px; font-size: 12px; color: var(--muted); pointer-events: none; text-shadow: 0 1px 2px #000; }
 
 /* Stats overlay (Unreal's stat fps / stat unit) */

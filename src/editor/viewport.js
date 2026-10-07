@@ -5,6 +5,7 @@ import * as THREE from 'three/webgpu';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
 import { trsOf } from '../core/vec.js';
+import { listStyles } from '../render/looks/styles.js';
 
 const lineMat = (color, opacity = 1) => new THREE.LineBasicMaterial({ color, transparent: opacity < 1, opacity, depthTest: false });
 
@@ -61,7 +62,7 @@ export class Viewport {
       if (k === 'h' && E.sel.kind === 'object' && E.shot.placed[E.sel.id]) { E.setHidden(E.sel.id, true); return; }
       if (E.view !== 'free') return; const m = { g: 'translate', r: 'rotate', s: 'scale' }[k]; if (m) this.gizmo.setMode(m);
       if (k === 'f') this.frameSelected(); });
-    this.menu();
+    this.menu(); this.wipeSetup();
     E.on('frameSelected', () => this.frameSelected());
   }
   setView(v) { this.orbit.enabled = v === 'free'; this.attach(); }
@@ -108,7 +109,9 @@ export class Viewport {
         ${item('haze', 'Haze', 'heaviest')}${item('dof', 'Depth of field')}${item('lens', 'Lens warp')}${item('glows', 'LED glows')}
         ${item('ghosts', 'Ghost flashes')}${item('pops', 'Pops (2D)')}</div>
       <div class="menu-group"><div class="menu-head">Style</div>
-        ${item('pixels', 'Chunky pixels', 'to 4K')}
+        <label class="check pick"><span>Look preset</span><select id="styleSel" title="The scene's look (look.style): renders to disk use it. Undoable."></select></label>
+        <label class="check pick"><span>A/B wipe</span><select id="abSel" title="Compare another preset: it shows right of a line you can drag. Viewport only."></select></label>
+        ${item('pixels', 'Chunky pixels', 'override')}
         ${pick('pixLines', 'Lines', [[480, '480'], [360, '360'], [240, '240']])}
         ${pick('pixBits', 'Colour', [[0, '24-bit'], [6, '18-bit, dithered'], [5, '15-bit, dithered']])}
         ${pick('pixScreen', 'Screen text', [[0, 'Chunky'], [1080, 'Sharp, 1080 lines'], ['full', 'Sharp, 4K']])}
@@ -125,12 +128,19 @@ export class Viewport {
     pop.addEventListener('change', e => { const k = e.target.dataset.show, p = e.target.dataset.pick;
       if (k) E.setShow(k, e.target.checked); if (p) E.setShow(p, e.target.value === 'full' ? 'full' : +e.target.value); });
     pop.querySelector('#revealAll').onclick = () => E.revealAll();
+    const styleSel = pop.querySelector('#styleSel'), abSel = pop.querySelector('#abSel');
+    styleSel.onchange = e => { e.stopPropagation(); E.cmd.run('setLookStyle', { style: styleSel.value }); };
+    abSel.onchange = e => { e.stopPropagation(); E.setShow('ab', abSel.value); };
+    const styleOpts = () => { const all = listStyles(E.doc), o = Object.entries(all).map(([k, v]) => `<option value="${k}">${v.label || k}</option>`).join('');
+      if (styleSel.dataset.opts !== o) { styleSel.innerHTML = o; abSel.innerHTML = '<option value="">Off</option>' + o; styleSel.dataset.opts = o; }
+      styleSel.value = E.doc.look.style || 'default'; abSel.value = E.show.ab || ''; };
+    E.on('change', styleOpts);
     pop.addEventListener('toggle', e => { btn.setAttribute('aria-expanded', String(e.newState === 'open')); });
     pop.addEventListener('beforetoggle', e => { if (e.newState !== 'open') return; const r = btn.getBoundingClientRect();
       pop.style.left = `${Math.min(r.left, innerWidth - 300)}px`; pop.style.top = `${r.bottom + 4}px`; });
     sel.onchange = () => E.setRefine(sel.value);
     const fps = document.getElementById('fpsSel'); fps.onchange = () => E.setFpsCap(+fps.value); E.on('view', () => { fps.value = String(E.fpsCap[E.view] || 0); });
-    const sync = () => {
+    const sync = () => { styleOpts();
       pop.querySelectorAll('[data-show]').forEach(i => { i.checked = !!E.show[i.dataset.show]; });
       pop.querySelectorAll('[data-pick]').forEach(i => { i.value = String(E.show[i.dataset.pick]); i.disabled = !E.show.pixels; });
       for (const k of ['pixAA', 'pixOutlines', 'pixStable']) pop.querySelector(`[data-show="${k}"]`).disabled = !E.show.pixels;
@@ -140,6 +150,27 @@ export class Viewport {
       h.textContent = n ? `${n} hidden · Alt+H reveals` : ''; pop.querySelector('#revealAll').disabled = !n;
     };
     E.on('show', sync); sync();
+  }
+
+  /** A/B wipe: style B's picture (copied right after it was drawn) over the canvas, right of a draggable line. */
+  wipeSetup() {
+    const E = this.E, h = document.getElementById('abHandle'), stage = document.getElementById('stage');
+    this.abC = document.getElementById('abWipe'); this.abB = document.createElement('canvas');
+    h.addEventListener('pointerdown', e => { e.preventDefault(); e.stopPropagation(); h.setPointerCapture(e.pointerId); E.abDrag = true; });
+    h.addEventListener('pointermove', e => { if (!E.abDrag) return; const r = stage.getBoundingClientRect();
+      E.show.abX = Math.min(0.98, Math.max(0.02, (e.clientX - r.left) / r.width)); this.wipe(true); });
+    h.addEventListener('pointerup', () => { E.abDrag = false; E.keepView(); });
+  }
+  grabB(B) { const c = this.abB, g = this.canvas; if (c.width !== g.width || c.height !== g.height) { c.width = g.width; c.height = g.height; }
+    c.getContext('2d').drawImage(g, 0, 0); this.abName = B.label || B.name; }
+  wipe(on) {
+    const E = this.E, c = this.abC, h = document.getElementById('abHandle'); c.hidden = h.hidden = !on; if (!on) return;
+    const B = this.abB; if (c.width !== B.width || c.height !== B.height) { c.width = B.width; c.height = B.height; }
+    const x = Math.round(E.show.abX * c.width), ctx = c.getContext('2d'); ctx.clearRect(0, 0, c.width, c.height);
+    ctx.drawImage(B, x, 0, c.width - x, c.height, x, 0, c.width - x, c.height);
+    h.style.left = `${E.show.abX * 100}%`;
+    document.getElementById('abLabelA').textContent = 'A · ' + (E.style.label || E.style.name) + (E.show.pixels ? ' (override)' : '');
+    document.getElementById('abLabelB').textContent = 'B · ' + this.abName;
   }
 
   /** SVG overlay: safe frames and the frame number in camera view. */

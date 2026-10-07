@@ -53,6 +53,8 @@
     <div class="vp-area">
       <div class="vp-stage" id="stage">
         <canvas id="gpu" width="1920" height="1080"></canvas>
+        <canvas id="abWipe" hidden aria-hidden="true"></canvas>
+        <div id="abHandle" hidden title="Drag to move the A/B wipe"><span id="abLabelA"></span><span id="abLabelB"></span></div>
         <svg id="overlay" viewBox="0 0 1920 1080" preserveAspectRatio="none" aria-hidden="true"></svg>
         <div class="vp-hud"><span id="hudView">Shot camera</span><span id="hudQuality"></span></div>
         <div id="stats" class="stats" hidden aria-label="Performance stats"></div>

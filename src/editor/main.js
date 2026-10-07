@@ -4,7 +4,8 @@ import { evaluate, indexDoc } from '../core/evaluate.js';
 import { createCommandStack } from '../core/commands.js';
 import { ChatLayer } from '../layers/chat2d.js';
 import { PopsLayer } from '../layers/pops2d.js';
-import { ShotRenderer, assetUrl, SHOW, PIXEL_LOOK } from '../render/shot_renderer.js';
+import { ShotRenderer, assetUrl, SHOW } from '../render/shot_renderer.js';
+import { resolveStyle } from '../render/looks/styles.js';
 import { Outliner } from './outliner.js';
 import { Inspector } from './inspector.js';
 import { Viewport } from './viewport.js';
@@ -48,6 +49,7 @@ async function boot() {
     E.ix = indexDoc(E.doc); shot.syncFromDoc(E.doc);
     if (/undo|redo|deleteKeys/.test(name)) E.selKeys = [];
     if (/Event|undo|redo|setLook/.test(name)) layers();
+    if (/LookStyle|undo|redo/.test(name)) E.applyStyle?.();
     E.layersChanged?.();
     E.emit('change', name); E.requestRender();
   });
@@ -55,19 +57,21 @@ async function boot() {
   window.VS = { perf: { report: () => E.perf.report(), on: v => E.perf.toggle(v !== false) }, E, cmd: (n, a) => E.cmd.run(n, a), commands: () => E.cmd.list(), evaluate: t => evaluate(E.doc, t, shot.geo, E.ix) };
 
   // ---- viewport visibility (Blender's eye toggles and overlays, Unreal's Show menu): editor-only, kept in this browser
-  E.show = { ...SHOW, pixels: false, pixLines: 480, pixBits: 6, pixAA: false, pixScreen: 1080, pixOutlines: false, pixBands: 0, pixBloom: 0, pixStable: false, safe: true, grid: true, frustum: true, hazeBox: true, lights: true, bounds: true };
+  E.show = { ...SHOW, pixels: false, pixLines: 480, pixBits: 6, pixAA: false, pixScreen: 1080, pixOutlines: false, pixBands: 0, pixBloom: 0, pixStable: false, ab: '', abX: 0.5, safe: true, grid: true, frustum: true, hazeBox: true, lights: true, bounds: true };
   E.hidden = new Set(); E.refineMode = 'idle'; E.fpsCap = { camera: 0, free: 0 };   // 0 = the display's rate
   const viewKey = 'vs-editor-view:' + doc.name;
   try { const v = JSON.parse(localStorage.getItem(viewKey) || 'null');
     if (v) { Object.assign(E.show, v.show); E.hidden = new Set(v.hidden || []); E.refineMode = v.refine || 'idle'; E.statsOn = !!v.stats; Object.assign(E.fpsCap, v.fps); } } catch { /* storage may be blocked */ }
   const keepView = () => { try { localStorage.setItem(viewKey, JSON.stringify({ show: E.show, hidden: [...E.hidden], refine: E.refineMode, stats: !!E.statsOn, fps: E.fpsCap })); } catch { /* storage may be blocked */ } };
   E.keepView = keepView;
-  // the chunky-pixel look is a renderer setting (it changes the canvas size), and renders to disk use it too
-  const applyPixels = () => { const S = E.show;
-    shot.setPixelLook(S.pixels ? { ...PIXEL_LOOK, lines: +S.pixLines, bits: +S.pixBits, msaa: !!S.pixAA, sharpScreen: S.pixScreen === 'full' ? true : +S.pixScreen,
-      outlines: !!S.pixOutlines, bands: +S.pixBands, bloom: +S.pixBloom, stable: !!S.pixStable } : null); };
-  if (E.show.pixels) applyPixels();
-  E.setShow = (k, on) => { E.show[k] = on; if (k.startsWith('pix')) applyPixels(); keepView(); E.emit('show'); E.requestRender(); };
+  // The look style is the document's (look.style, a named preset; see render/looks/styles.js), so renders to disk follow
+  // it. The Show menu's chunky-pixel settings, when on, override its pixel part in this browser (renders follow that too).
+  const applyStyle = E.applyStyle = () => { const S = E.show, st = resolveStyle(E.doc);
+    if (S.pixels) st.pixel = { lines: +S.pixLines, bits: +S.pixBits, msaa: !!S.pixAA, sharpScreen: S.pixScreen === 'full' ? true : +S.pixScreen,
+      outlines: !!S.pixOutlines, bands: +S.pixBands, bloom: +S.pixBloom, stable: !!S.pixStable };
+    shot.setStyle(st); E.style = st; };
+  applyStyle();
+  E.setShow = (k, on) => { E.show[k] = on; if (k.startsWith('pix')) applyStyle(); keepView(); E.emit('show'); E.requestRender(); };
   E.setHidden = (id, hide) => { hide ? E.hidden.add(id) : E.hidden.delete(id); keepView(); E.emit('show'); E.requestRender(); };
   E.revealAll = () => { E.hidden.clear(); keepView(); E.emit('show'); E.requestRender(); };
   E.setFpsCap = n => { E.fpsCap[E.view] = n; keepView(); E.emit('show'); };
@@ -104,8 +108,12 @@ async function boot() {
       perf.time(chatUp ? 'three: encode + upload chat' : 'three: encode', () => shot.renderFree(st, viewport.freeCam, helpers, E.show, { chat: chatUp }));
     } else {
       E.layerOpts = layerOpts(st); const u = E.layerOpts.upload, ups = ['chat', 'flat', 'pops'].filter(k => u[k] && (k === 'chat' || E.layerOpts[k]));
-      perf.time(ups.length ? `three: encode + upload ${ups.join(', ')}` : 'three: encode', () => shot.render(st, { ...E.layerOpts, quality, show: output ? undefined : E.show }));
+      // A/B wipe (viewport only): style B is drawn first and copied, then the document's style (A) to the canvas
+      const B = output ? null : E.abStyle();
+      if (B) perf.time(`A/B wipe: ${B.name}`, () => { shot.setStyle(B); shot.render(st, { ...E.layerOpts, quality, show: E.show }); viewport.grabB(B); shot.setStyle(E.style); });
+      perf.time(ups.length && !B ? `three: encode + upload ${ups.join(', ')}` : 'three: encode', () => shot.render(st, { ...E.layerOpts, ...(B ? { upload: { chat: false, flat: false, pops: false } } : {}), quality, show: output ? undefined : E.show }));
     }
+    viewport.wipe(!output && !!E.abStyle());
     E.quality = quality; perf.time('overlay', () => viewport.overlay(st));
     $('timecode').textContent = E.timecode(E.frame); $('frameNo').textContent = `f ${E.frame} · ${t.toFixed(3)} s`;
     hud(quality === 'play' ? 'Play quality' : 'Render quality');
@@ -117,8 +125,11 @@ async function boot() {
   // Chrome can be slow to report finished work while no frames are drawn, so the wait is capped (a slice is ~15–25 ms).
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   const gpuIdle = () => Promise.race([shot.backend === 'WebGPU' ? shot.renderer.backend.device.queue.onSubmittedWorkDone() : sleep(25), sleep(40)]);
+  /** Style B of the A/B wipe (resolved), or null when the wipe is off, in free view, or B is the document's style. */
+  E.abStyle = () => { const n = E.show.ab; if (!n || E.view !== 'camera' || !E.style) return null; const B = resolveStyle(E.doc, n); return B.name === E.style.name && !E.show.pixels ? null : B; };
   const refine = async () => {
     if (E.view !== 'camera' || E.playing || E.interacting || E.refineMode !== 'idle' || !E.st) return;
+    if (E.abStyle()) { E.renderNow('render'); return; }   // the wipe refines both styles in one go (no slices)
     const SLICES = 16, job = refineJob = shot.renderSteps(E.st, { ...E.layerOpts, upload: { chat: false, flat: false, pops: false }, quality: 'render', slices: SLICES, show: E.show });
     for (let i = 1; ; i++) {
       if (refineJob !== job) return;

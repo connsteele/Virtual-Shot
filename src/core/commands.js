@@ -51,6 +51,10 @@ export const COMMANDS = {
     if (tr && tr.keys.length) throw new Error(`${target}.${prop} is animated: set a key instead`);
     if (tr) tr.default = v; else doc.tracks.push({ target, prop, default: v, keys: [] });
   },
+  /** Pick the named look preset (look.style): 'default', 'chunky-pixels', 'wii-bloom', 'ps1', or one in look.styles. */
+  setLookStyle(doc, { style }) { doc.look.style = style; },
+  /** Add or replace a named look preset in the document (look.styles[name]); def is merged over a built-in of that name. */
+  defineLookStyle(doc, { name, def }) { (doc.look.styles ||= {})[name] = JSON.parse(JSON.stringify(def)); },
   /** Set a look parameter (look.lighting.screen, look.haze.screenLight ...). */
   setLook(doc, { path, value }) { setPath(doc.look, path, value); },
   /** Edit an event: a chat message (in the chat layer's script), a ghost flash or a pop. */
