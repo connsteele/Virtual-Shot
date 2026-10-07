@@ -4,7 +4,7 @@ import { evaluate, indexDoc } from '../core/evaluate.js';
 import { createCommandStack } from '../core/commands.js';
 import { ChatLayer } from '../layers/chat2d.js';
 import { PopsLayer } from '../layers/pops2d.js';
-import { ShotRenderer, assetUrl, SHOW } from '../render/shot_renderer.js';
+import { ShotRenderer, assetUrl, SHOW, PIXEL_LOOK } from '../render/shot_renderer.js';
 import { Outliner } from './outliner.js';
 import { Inspector } from './inspector.js';
 import { Viewport } from './viewport.js';
@@ -55,14 +55,17 @@ async function boot() {
   window.VS = { perf: { report: () => E.perf.report(), on: v => E.perf.toggle(v !== false) }, E, cmd: (n, a) => E.cmd.run(n, a), commands: () => E.cmd.list(), evaluate: t => evaluate(E.doc, t, shot.geo, E.ix) };
 
   // ---- viewport visibility (Blender's eye toggles and overlays, Unreal's Show menu): editor-only, kept in this browser
-  E.show = { ...SHOW, safe: true, grid: true, frustum: true, hazeBox: true, lights: true, bounds: true };
+  E.show = { ...SHOW, pixels: false, safe: true, grid: true, frustum: true, hazeBox: true, lights: true, bounds: true };
   E.hidden = new Set(); E.refineMode = 'idle'; E.fpsCap = { camera: 0, free: 0 };   // 0 = the display's rate
   const viewKey = 'vs-editor-view:' + doc.name;
   try { const v = JSON.parse(localStorage.getItem(viewKey) || 'null');
     if (v) { Object.assign(E.show, v.show); E.hidden = new Set(v.hidden || []); E.refineMode = v.refine || 'idle'; E.statsOn = !!v.stats; Object.assign(E.fpsCap, v.fps); } } catch { /* storage may be blocked */ }
   const keepView = () => { try { localStorage.setItem(viewKey, JSON.stringify({ show: E.show, hidden: [...E.hidden], refine: E.refineMode, stats: !!E.statsOn, fps: E.fpsCap })); } catch { /* storage may be blocked */ } };
   E.keepView = keepView;
-  E.setShow = (k, on) => { E.show[k] = on; keepView(); E.emit('show'); E.requestRender(); };
+  // the chunky-pixel look is a renderer setting (it changes the canvas size), and renders to disk use it too
+  const applyPixels = () => { if (!!shot.pixel !== !!E.show.pixels) shot.setPixelLook(E.show.pixels ? PIXEL_LOOK : null); };
+  applyPixels();
+  E.setShow = (k, on) => { E.show[k] = on; if (k === 'pixels') applyPixels(); keepView(); E.emit('show'); E.requestRender(); };
   E.setHidden = (id, hide) => { hide ? E.hidden.add(id) : E.hidden.delete(id); keepView(); E.emit('show'); E.requestRender(); };
   E.revealAll = () => { E.hidden.clear(); keepView(); E.emit('show'); E.requestRender(); };
   E.setFpsCap = n => { E.fpsCap[E.view] = n; keepView(); E.emit('show'); };
@@ -184,7 +187,7 @@ async function boot() {
     const btns = on => { const a = document.getElementById('rStart'), b = document.getElementById('rStop');
       if (a) { a.disabled = on; a.textContent = on ? 'Rendering…' : 'Render frames'; } if (b) b.disabled = !on; };
     btns(true);
-    const out = document.createElement('canvas'); out.width = 1920; out.height = 1080; const ox = out.getContext('2d');
+    const out = document.createElement('canvas'); out.width = shot.OW; out.height = shot.OH; const ox = out.getContext('2d');   // 3840x2160 with the pixel look
     const bar = () => document.getElementById('rBar'), msg = t => { const m = document.getElementById('rMsg'); if (m) m.textContent = t; };
     const t0 = performance.now(), n = to - from + 1; let done = 0; const inflight = new Set();
     try {

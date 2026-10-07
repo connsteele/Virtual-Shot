@@ -100,7 +100,7 @@ export class Inspector {
       <div class="prop static"><label>From frame</label><input type="number" id="rFrom" value="${E.renderFrom ?? 0}" min="0" max="${E.last}" aria-label="From frame"></div>
       <div class="prop static"><label>To frame</label><input type="number" id="rTo" value="${E.renderTo ?? E.last}" min="0" max="${E.last}" aria-label="To frame"></div>
       <div class="prop static"><label>Folder</label><input type="text" id="rDir" value="${esc(E.renderDir || 'editor_render')}" aria-label="Output folder"></div>
-      <div class="note">PNG, 1920×1080, Render quality, to G:\\Claude\\Virtual Legacy\\Channel\\Virtual Shot spike\\&lt;folder&gt;. Frames always have the full look: the viewport's Show settings and hidden objects don't apply.</div>
+      <div class="note">PNG, 1920×1080 (3840×2160 with Chunky pixels on), Render quality, to G:\\Claude\\Virtual Legacy\\Channel\\Virtual Shot spike\\&lt;folder&gt;. Frames always have the full look: the viewport's Show settings (except Chunky pixels) and hidden objects don't apply.</div>
       <div class="r-btns"><button type="button" class="primary" data-act="render" id="rStart" ${local && !E.rendering ? '' : 'disabled'}>${E.rendering ? 'Rendering…' : 'Render frames'}</button>
         <button type="button" data-act="stopRender" id="rStop" title="Stop the render (Esc). Frames already written are kept." ${E.rendering ? '' : 'disabled'}>Stop</button></div>
       ${local ? '' : '<div class="note">Rendering to disk needs the local copy of the editor (artifacts can\'t write files).</div>'}

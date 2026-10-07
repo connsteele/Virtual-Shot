@@ -6,7 +6,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { bodyMaterial, crtMaterial, glowMaterial, makeLightUniforms } from './materials.js';
 import { makePost } from './post.js';
 import { makeHaze } from './haze.js';
-import { makeComposite, makeHazeMeter, makeEmitAverage, flatScreenQuad } from './final_comp.js';
+import { makeComposite, makeHazeMeter, makeEmitAverage, makeAreaUpscale, flatScreenQuad } from './final_comp.js';
 import { indexDoc } from '../core/evaluate.js';
 import { add, scl, xf, nrm, trsOf } from '../core/vec.js';
 
@@ -22,13 +22,30 @@ export const assetUrl = ref => {
 const loadImage = async src => createImageBitmap(await (await fetch(src)).blob(), { premultiplyAlpha: 'none', colorSpaceConversion: 'none' });
 /** Parts of the look the editor can turn off in its viewport (all on for renders). */
 export const SHOW = { haze: true, dof: true, lens: true, glows: true, ghosts: true, pops: true };
+/** The chunky-pixel look (off by default): the whole frame (3D, lens, depth of field, haze, 2D layers) is rendered at a
+ *  480-line internal size, as an emulator renders a Wii game at native resolution, then area-upscaled to the output. */
+export const PIXEL_LOOK = { lines: 480, output: [3840, 2160] };
 const m4 = a => new THREE.Matrix4().fromArray(Array.from(a));
 const v3 = a => new THREE.Vector3(...a);
 
 export class ShotRenderer {
   constructor(canvas, doc, { forceWebGL = false, trackTimestamp = false } = {}) {
     this.canvas = canvas; this.doc = doc; this.ix = indexDoc(doc); this.forceWebGL = forceWebGL; this.trackTimestamp = trackTimestamp;
-    this.W = doc.output.width; this.H = doc.output.height;
+    // W x H: the size everything renders at; OW x OH: the canvas. They differ only with the pixel look (setPixelLook).
+    this.W = this.OW = doc.output.width; this.H = this.OH = doc.output.height; this.pixel = null;
+  }
+
+  /** Turn the chunky-pixel look on (PIXEL_LOOK, or { lines, output: [w, h] }) or off (null). Resizes the buffers and
+   *  the canvas; the next render() draws with it. */
+  setPixelLook(look) {
+    const { doc } = this, aspect = doc.output.width / doc.output.height;
+    const [ow, oh] = look ? look.output : [doc.output.width, doc.output.height];
+    const h = look ? look.lines : oh, w = look ? Math.round(h * aspect / 2) * 2 : ow;   // 480 lines at 16:9 -> 854 x 480
+    this.pixel = look ? { lines: h, output: [ow, oh] } : null;
+    this.W = w; this.H = h; this.OW = ow; this.OH = oh;
+    for (const t of [this.lensRT, this.cocRT, this.finalRT, this.pixelRT]) t.setSize(w, h);
+    this.upscale.U.src.value.set(w, h); this.upscale.U.dst.value.set(ow, oh);
+    this.renderer.setSize(ow, oh, false);
   }
 
   /** chatCanvas: the tall chat texture; flatCanvas / popsCanvas: the full-frame chat and pops layers (composited here). */
@@ -165,6 +182,9 @@ export class ShotRenderer {
       this.meter = makeHazeMeter({ hazeTex: this.hazeRT.texture });
     }
     this.comp = makeComposite({ engineTex: this.finalRT.texture, flatTex: this.flatTex, popsTex: this.popsTex, hazeTex: this.hazeRT.texture });
+    // pixel look: the composite goes to this internal-size buffer, then is area-upscaled to the canvas
+    this.pixelRT = rt(this.W, this.H, { minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter });
+    this.upscale = makeAreaUpscale({ srcTex: this.pixelRT.texture });
     return this;
   }
 
@@ -185,6 +205,7 @@ export class ShotRenderer {
     const r = this.renderer, final = opts.final !== false, show = { ...SHOW, ...opts.show }, n = Math.max(1, opts.slices || 1);
     this.quality = opts.quality || 'render';
     if (st.cut) { r.setRenderTarget(this.finalRT); r.clear(); r.setRenderTarget(null); r.clear(); return; }
+    const pixel = !!this.pixel;
     if (!show.lens) st = { ...st, camera: { ...st.camera, k: 0, ov: 1, fovRender: st.camera.fov } };
     const hazeOn = !!(final && this.haze && show.haze && opts.haze !== false && st.haze && st.haze.gain > 0 && !st.flat.before);
     if (!st.flat.before) {
@@ -203,7 +224,8 @@ export class ShotRenderer {
     C.hazeOn.value = hazeOn ? 1 : 0; C.popsOn.value = final && opts.pops && show.pops ? 1 : 0;
     C.k.value = c.k; C.sq.value = c.squint; C.aspect.value = this.W / this.H;
     C.blur.value = this.quality === 'play' ? 1.0 / this.hazeRT.width : 0;
-    this.mark('composite'); r.setRenderTarget(null); this.comp.quad.render(r);
+    this.mark('composite'); r.setRenderTarget(pixel ? this.pixelRT : null); this.comp.quad.render(r);
+    if (pixel) { this.mark('area upscale'); r.setRenderTarget(null); this.upscale.quad.render(r); }
   }
 
   /** The haze for this frame: the screen's light grid, then the ray march into hazeRT (a fraction of the scene buffer). */

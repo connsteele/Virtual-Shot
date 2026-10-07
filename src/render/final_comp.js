@@ -3,7 +3,7 @@
 //   warp, fringe, vignette and squint) -> pops alpha-over in linear -> sRGB.
 // Plus the small passes that feed it: the screen's emission grid for lighting the haze, and a haze level meter.
 import * as THREE from 'three/webgpu';
-import { Fn, uniform, texture, uv, vec2, vec3, vec4, float, mix, clamp, max, min, dot, abs, pow, select, smoothstep, Loop } from 'three/tsl';
+import { Fn, uniform, texture, uv, vec2, vec3, vec4, float, mix, clamp, max, min, dot, abs, pow, select, smoothstep, floor, Loop } from 'three/tsl';
 import { sstep } from './materials.js';
 
 const quadMat = node => { const m = new THREE.NodeMaterial(); m.fragmentNode = node; m.depthTest = false; m.depthWrite = false; return m; };
@@ -75,3 +75,21 @@ export function makeEmitAverage({ hiTex, gx, gy, samples = 16 }) {
 }
 
 export const flatScreenQuad = node => new THREE.QuadMesh(quadMat(node));
+
+/** Area-sampling upscale, after Dolphin's "Area Sampling" output resampler: each output pixel is the mean of the source
+ *  texels under its footprint, weighted by how much of it each covers. At a non-integer factor (480 lines to 2160 is
+ *  4.5x) every source pixel stays a hard-edged block of near-equal size, with a one-pixel blend only where a block
+ *  edge falls inside an output pixel; nearest neighbour would make blocks of 4 and 5 pixels, bilinear would blur them.
+ *  For upscales only (the footprint spans at most 2x2 texels). In display values, like the emulator. */
+export function makeAreaUpscale({ srcTex }) {
+  const U = { src: uniform(new THREE.Vector2(854, 480)), dst: uniform(new THREE.Vector2(3840, 2160)) };
+  const src = texture(srcTex);
+  const node = Fn(() => {
+    const s = U.src.div(U.dst), p = uv().mul(U.dst);               // output pixel centre, in output pixels
+    const a = p.sub(0.5).mul(s), b = p.add(0.5).mul(s);              // its footprint, in source texels
+    const i0 = floor(a), w = clamp(i0.add(1).sub(a).div(b.sub(a)), 0, 1);   // share of the footprint on texel i0
+    const t = (x, y) => src.sample(i0.add(vec2(x + 0.5, y + 0.5)).div(U.src)).level(0).rgb;
+    return vec4(mix(mix(t(1, 1), t(0, 1), w.x), mix(t(1, 0), t(0, 0), w.x), w.y), 1);
+  })();
+  return { U, quad: new THREE.QuadMesh(quadMat(node)) };
+}

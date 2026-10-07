@@ -562,6 +562,18 @@ few frames at both qualities while loading and waits for the GPU, so the wait ha
 at load. Chrome caches compiled shaders, so later loads are quick. The architecture should precompile its pipelines at
 load (three's `compileAsync` covers scene materials but not full-screen passes).
 
+## 8. Chunky-pixel look (480p, area-upscaled to 4K)
+
+- A Show-menu toggle (Style › Chunky pixels, off by default; `?pixels` on the app page). `ShotRenderer.setPixelLook()`
+  renders the whole frame (3D, lens, DOF, haze, chat, pops) at 854×480, then area-upscales it to 3840×2160
+  (`makeAreaUpscale` in `final_comp.js`, after Dolphin's Area Sampling resampler). Renders to disk follow the toggle.
+- The look goes before the upscale, so haze and DOF are at 480p too, like a game at native resolution. DOF radii and
+  the haze buffer scale with the internal size already (`H / 1080`, fractions of the scene buffer).
+- Area sampling at 4.5× keeps every source pixel a hard block of even width, with a one-pixel blend at block edges;
+  nearest gives 4- and 5-pixel blocks, bilinear blurs. The pass is a 4-tap shader, a few ms of headless frame time at most.
+- In the Black Page shot the effect is mild (dark, DOF-blurred); it shows on the remote's edges and the screen text.
+  Chunkier options: no 4× MSAA in this mode, or fewer lines. Frames: `Virtual Shot spike\chunky_pixels_v1\`.
+
 ## Running the spike
 
 ```

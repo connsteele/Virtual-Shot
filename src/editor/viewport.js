@@ -106,11 +106,13 @@ export class Viewport {
     pop.innerHTML = `<div class="menu-group"><div class="menu-head">Look</div>
         ${item('haze', 'Haze', 'heaviest')}${item('dof', 'Depth of field')}${item('lens', 'Lens warp')}${item('glows', 'LED glows')}
         ${item('ghosts', 'Ghost flashes')}${item('pops', 'Pops (2D)')}</div>
+      <div class="menu-group"><div class="menu-head">Style</div>
+        ${item('pixels', 'Chunky pixels', '480p to 4K')}</div>
       <div class="menu-group"><div class="menu-head">Overlays</div>
         ${item('safe', 'Safe frames', 'camera')}${item('grid', 'Grid', 'free')}${item('frustum', 'Shot camera', 'free')}${item('hazeBox', 'Haze bounds', 'free')}
         ${item('lights', 'Lights and glass axes', 'free')}${item('bounds', 'Selection bounds', 'free')}</div>
       <div class="menu-foot"><button type="button" id="revealAll">Reveal hidden objects <kbd>Alt+H</kbd></button>
-        <div class="note">Viewport only: renders to disk always use the full look.</div></div>`;
+        <div class="note">Viewport only: renders to disk always use the full look. Chunky pixels applies to renders too (3840×2160).</div></div>`;
     pop.addEventListener('change', e => { const k = e.target.dataset.show; if (k) E.setShow(k, e.target.checked); });
     pop.querySelector('#revealAll').onclick = () => E.revealAll();
     pop.addEventListener('toggle', e => { btn.setAttribute('aria-expanded', String(e.newState === 'open')); });

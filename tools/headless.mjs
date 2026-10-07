@@ -10,7 +10,7 @@ import path from 'node:path';
 
 const [, , urlPath = '/src/index.html', expr = 'window.VS_READY', ...flags] = process.argv;
 const CHROME = process.env.CHROME || 'C:/Program Files/Google/Chrome/Application/chrome.exe';
-const PORT = 9333, BASE = process.env.VS_BASE || 'http://localhost:8790';
+const PORT = +(process.env.CDP_PORT || 9333), BASE = process.env.VS_BASE || 'http://localhost:8790';
 const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'vs-chrome-'));
 const chrome = spawn(CHROME, ['--headless=new', `--remote-debugging-port=${PORT}`, `--user-data-dir=${profile}`, '--enable-unsafe-webgpu',
   '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--no-first-run', '--no-default-browser-check',
