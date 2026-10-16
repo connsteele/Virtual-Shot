@@ -47,7 +47,6 @@ In-page benches (`desktop/bench/bench.js`): `exportBench` (paths `none`, `readba
 `desktop/bench/wgsl_bench.html` is the browser half of the shader probe.
 
 Beyond WebGPU (LEARNINGS §10): `exportGeometry({f})` in the editor writes the scene's triangles and camera to
-`rust_tauri
 `Virtual Shot spike\rust_tauri\rt\`; `desktop/rt-probe` traces CRT soft shadows on them with hardware ray queries and a software BVH
 (`--k=0,3,5 --samples=16 --backend=vulkan --browser=desktop/bench/rt_data`), and `desktop/bench/rt_bench.html` runs the
 software tracer in a browser. `NATIVE_VIEW=rt node desktop/tools/drive.mjs tauri /desktop/bench/native_view.html
