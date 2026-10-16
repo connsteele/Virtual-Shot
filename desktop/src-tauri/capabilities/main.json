@@ -1,0 +1,7 @@
+{
+  "identifier": "main",
+  "description": "The editor window may call the shell's commands, whether it is served by the vs protocol or the Node dev server",
+  "windows": ["main"],
+  "remote": { "urls": ["http://vs.localhost/*", "http://localhost:8790/*", "http://localhost:8792/*"] },
+  "permissions": ["core:default"]
+}

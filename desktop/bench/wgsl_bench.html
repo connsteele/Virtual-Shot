@@ -1,0 +1,53 @@
+<!doctype html><meta charset="utf-8"><title>WGSL probe (browser)</title>
+<pre id="out">running…</pre>
+<script type="module">
+// The browser half of the native-vs-browser GPU probe: desktop/bench/probe.wgsl through WebGPU (Dawn), timed with
+// timestamp queries. desktop/wgpu-probe runs the same WGSL, sizes and data natively. Results in window.PROBE.
+const q = new URLSearchParams(location.search), REPS = +(q.get('reps') || 40);
+const W = 1920, H = 1080, SW = 2880, SH = 1620;
+function noiseBytes(n, seed) { const b = new Uint8Array(n); let x = seed >>> 0; for (let i = 0; i < n; i++) { x ^= x << 13; x >>>= 0; x ^= x >>> 17; x ^= x << 5; x >>>= 0; b[i] = x & 255; } return b; }
+function distBytes() { const b = noiseBytes(SW * SH * 4, 7); for (let y = 0; y < SH; y++) for (let x = 0; x < SW; x++) { const i = (y * SW + x) * 4; b[i] = Math.min(255, Math.floor(x / SW * 200) + (b[i] % 56)); } return b; }
+async function run() {
+  const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
+  const device = await adapter.requestDevice({ requiredFeatures: ['timestamp-query'] });
+  const code = await (await fetch('/desktop/bench/probe.wgsl')).text();
+  const module = device.createShaderModule({ code });
+  const info = await module.getCompilationInfo(); if (info.messages.some(m => m.type === 'error')) throw new Error(info.messages.map(m => m.message).join('\n'));
+  const tex = (data) => { const t = device.createTexture({ size: [SW, SH], format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
+    device.queue.writeTexture({ texture: t }, data, { bytesPerRow: SW * 4 }, [SW, SH]); return t; };
+  const color = tex(noiseBytes(SW * SH * 4, 1)), dist = tex(distBytes());
+  const params = device.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+  device.queue.writeBuffer(params, 0, new Float32Array([W, H, SW, SH, 0.5]).buffer); device.queue.writeBuffer(params, 20, new Uint32Array([256, 96, 16]));
+  const lightData = new Float32Array(16 * 8); for (let j = 0; j < 16; j++) lightData.set([Math.cos(j) * 0.8, Math.sin(j * 1.3) * 0.5, -0.5 - j * 0.1, 1, 0.5 + (j % 3) * 0.2, 0.4, 0.3 + (j % 5) * 0.1, 1], j * 8);
+  const lights = device.createBuffer({ size: lightData.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST }); device.queue.writeBuffer(lights, 0, lightData);
+  const sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear', addressModeU: 'clamp-to-edge', addressModeV: 'clamp-to-edge' });
+  const target = device.createTexture({ size: [W, H], format: 'rgba16float', usage: GPUTextureUsage.RENDER_ATTACHMENT });
+  const out = { ua: navigator.userAgent, adapter: adapter.info && { vendor: adapter.info.vendor, architecture: adapter.info.architecture }, reps: REPS };
+  for (const entry of ['fs_gather', 'fs_march']) {
+    const pipe = await device.createRenderPipelineAsync({ layout: 'auto', vertex: { module, entryPoint: 'vs' }, fragment: { module, entryPoint: entry, targets: [{ format: 'rgba16float' }] } });
+    const bind = device.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: params } }, { binding: 1, resource: color.createView() },
+      { binding: 2, resource: dist.createView() }, { binding: 3, resource: sampler }, { binding: 4, resource: { buffer: lights } }].filter(e => entry === 'fs_march' ? e.binding !== 1 && e.binding !== 2 && e.binding !== 3 : e.binding !== 4) });
+    const qs = device.createQuerySet({ type: 'timestamp', count: 2 * REPS });
+    const resolve = device.createBuffer({ size: 16 * REPS, usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC });
+    const read = device.createBuffer({ size: 16 * REPS, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+    // warm-up (pipeline creation, clocks), then REPS timed passes, one submit each
+    for (let w = 0; w < 10; w++) { const e = device.createCommandEncoder(); const p = e.beginRenderPass({ colorAttachments: [{ view: target.createView(), loadOp: 'clear', storeOp: 'store' }] });
+      p.setPipeline(pipe); p.setBindGroup(0, bind); p.draw(3); p.end(); device.queue.submit([e.finish()]); }
+    await device.queue.onSubmittedWorkDone();
+    const t0 = performance.now();
+    for (let r = 0; r < REPS; r++) {
+      const e = device.createCommandEncoder();
+      const p = e.beginRenderPass({ colorAttachments: [{ view: target.createView(), loadOp: 'clear', storeOp: 'store' }], timestampWrites: { querySet: qs, beginningOfPassWriteIndex: 2 * r, endOfPassWriteIndex: 2 * r + 1 } });
+      p.setPipeline(pipe); p.setBindGroup(0, bind); p.draw(3); p.end(); device.queue.submit([e.finish()]);
+    }
+    const e = device.createCommandEncoder(); e.resolveQuerySet(qs, 0, 2 * REPS, resolve, 0); e.copyBufferToBuffer(resolve, 0, read, 0, 16 * REPS); device.queue.submit([e.finish()]);
+    await read.mapAsync(GPUMapMode.READ); const ts = new BigUint64Array(read.getMappedRange().slice(0)); read.unmap();
+    const wall = performance.now() - t0;
+    const ms = []; for (let r = 0; r < REPS; r++) ms.push(Number(ts[2 * r + 1] - ts[2 * r]) / 1e6); ms.sort((a, b) => a - b);
+    out[entry] = { median_ms: +ms[REPS >> 1].toFixed(3), min_ms: +ms[0].toFixed(3), p90_ms: +ms[Math.floor(REPS * 0.9)].toFixed(3), wall_ms_per_pass: +(wall / REPS).toFixed(3) };
+  }
+  return out;
+}
+run().then(r => { window.PROBE = r; window.VS_READY = true; document.getElementById('out').textContent = JSON.stringify(r, null, 1); })
+  .catch(e => { window.VS_ERROR = String(e.stack || e); document.getElementById('out').textContent = window.VS_ERROR; });
+</script>

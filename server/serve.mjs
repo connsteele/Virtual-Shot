@@ -5,10 +5,12 @@
 //   GET  /wii/...        Astra's Wii Remote folder, read-only
 //   POST /save/<path>    writes the request body under the spike output folder on G: (retries are the client's job)
 //   POST /save-rgba/<path>?w=&h=   raw RGBA8 pixels (top row first), encoded to PNG here
+//   POST /ffmpeg/open, /ffmpeg/frame, /ffmpeg/close   raw RGBA frames piped into ffmpeg (see ffmpegRoute)
 //   POST /save-idat/<path>?w=&h=   an already filtered + zlib-compressed RGBA8 PNG image stream (the page compresses it
 //                        with CompressionStream); the server only wraps the PNG chunks around it. Frame export history:
 //                        canvas.toBlob ~1 s a frame in a background tab; raw 8 MB uploads ~0.4 s through the browser pane
 import http from 'node:http';
+import { spawn } from 'node:child_process';
 import zlib from 'node:zlib';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -54,8 +56,47 @@ async function encodePNG(px, w, h) {
   return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk('IHDR', ihdr), chunk('IDAT', await new Promise((ok, no) => zlib.deflate(raw, { level: 6 }, (e, b) => e ? no(e) : ok(b)))), chunk('IEND', Buffer.alloc(0))]);
 }
 
+// POST /ffmpeg/open?w=&h=&fps=&codec=&out=<rel>, /ffmpeg/frame?id=&i= (raw RGBA, written in frame order),
+// /ffmpeg/close?id=: pipe raw frames into ffmpeg (ProRes 4444 by default). The same routes as the Tauri shell's Rust
+// server (desktop/src-tauri/src/serve.rs), so the spike can tell what a native host buys from what Rust buys.
+const pipes = new Map(); let nextPipe = 1;
+const FF_CODECS = {
+  prores4444: ['-vf', 'scale=out_color_matrix=bt709:out_range=tv,format=yuva444p10le', '-c:v', 'prores_ks', '-profile:v', '4', '-vendor', 'apl0'],
+  prores422hq: ['-vf', 'scale=out_color_matrix=bt709:out_range=tv,format=yuv422p10le', '-c:v', 'prores_ks', '-profile:v', '3', '-vendor', 'apl0'],
+  h264: ['-vf', 'scale=out_color_matrix=bt709:out_range=tv,format=yuv420p', '-c:v', 'h264_nvenc', '-preset', 'p5', '-tune', 'hq', '-rc', 'vbr', '-cq', '16', '-b:v', '0'],
+};
+async function ffmpegRoute(req, res, urlPath) {
+  const q = new URL(req.url, 'http://x').searchParams, send = (code, body) => { res.writeHead(code, { 'Content-Type': typeof body === 'string' ? 'text/plain' : 'application/json' }); res.end(typeof body === 'string' ? body : JSON.stringify(body)); };
+  const body = await new Promise(ok => { const c = []; req.on('data', d => c.push(d)); req.on('end', () => ok(Buffer.concat(c))); });
+  if (urlPath === '/ffmpeg/open') {
+    const w = +q.get('w'), h = +q.get('h'), rel = q.get('out') || '', codec = q.get('codec') || 'prores4444';
+    if (!(w > 0 && h > 0) || !/^[A-Za-z0-9_.\- /]+$/.test(rel) || rel.split('/').some(s => s === '..' || s.startsWith('.')) || !FF_CODECS[codec]) return send(400, 'bad request');
+    const dest = path.join(OUT, rel); fs.mkdirSync(path.dirname(dest), { recursive: true });
+    const args = ['-hide_banner', '-loglevel', 'warning', '-y', '-f', 'rawvideo', '-pix_fmt', 'rgba', '-s', `${w}x${h}`, '-framerate', q.get('fps') || '60', '-i', 'pipe:0',
+      ...FF_CODECS[codec], '-color_primaries', 'bt709', '-color_trc', 'bt709', '-colorspace', 'bt709', dest];
+    const child = spawn('ffmpeg', args, { stdio: ['pipe', 'ignore', fs.openSync(dest.replace(/\.[^.]+$/, '.ffmpeg.log'), 'w')] });
+    const id = nextPipe++; pipes.set(id, { child, next: 0, early: new Map(), bytes: w * h * 4, t0: performance.now(), dest, chain: Promise.resolve() });
+    return send(200, { id, args });
+  }
+  const p = pipes.get(+q.get('id')); if (!p) return send(404, 'no such pipe');
+  if (urlPath === '/ffmpeg/frame') {
+    if (body.length !== p.bytes) return send(400, 'size mismatch');
+    p.early.set(+q.get('i'), body);
+    // write every frame that is next in order; stdin's backpressure holds the response until ffmpeg takes it
+    p.chain = p.chain.then(async () => { while (p.early.has(p.next)) { const b = p.early.get(p.next); p.early.delete(p.next); p.next++;
+      if (!p.child.stdin.write(b)) await new Promise(ok => p.child.stdin.once('drain', ok)); } });
+    await p.chain; return send(200, 'ok');
+  }
+  if (urlPath === '/ffmpeg/close') {
+    pipes.delete(+q.get('id')); await p.chain; const code = await new Promise(ok => { p.child.on('exit', ok); p.child.stdin.end(); });
+    return send(200, { ok: code === 0, frames: p.next, unwritten: p.early.size, seconds: (performance.now() - p.t0) / 1000, bytes: fs.statSync(p.dest).size, file: p.dest });
+  }
+  send(404, 'not found');
+}
+
 http.createServer((req, res) => {
   const urlPath = req.url.split('?')[0];
+  if (req.method === 'POST' && urlPath.startsWith('/ffmpeg/')) { ffmpegRoute(req, res, urlPath).catch(e => { res.writeHead(500); res.end(String(e)); }); return; }
   if (req.method === 'POST' && urlPath.startsWith('/save-scene/')) {   // the editor's Save: a scene file in the repo
     const name = decodeURIComponent(urlPath.slice(12));
     if (!/^[A-Za-z0-9_.-]+\.scene\.json$/.test(name)) { res.writeHead(400); return res.end('bad scene name'); }

@@ -1,0 +1,13 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Virtual Shot",
+  "version": "0.0.0",
+  "identifier": "com.connsteele.virtualshot.spike",
+  "build": { "frontendDist": "../stub" },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [],
+    "security": { "csp": null }
+  },
+  "bundle": { "active": true, "targets": ["nsis"], "icon": ["icons/icon.ico", "icons/icon.png"] }
+}
