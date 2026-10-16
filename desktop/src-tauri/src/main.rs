@@ -6,7 +6,8 @@
 //   --data     WebView2 user data folder (a fresh one measures a cold start: no shader cache)
 //   --http=<port>  also serve the same routes on http://localhost:<port> from this process (use with --server)
 //   --browser-args="..."  extra Chromium switches for WebView2 (e.g. --enable-dawn-features=disable_robustness)
-//   --native-viewport[=dx12|vulkan]  a transparent window: wgpu draws a native viewport under the web page (probe)
+//   --native-viewport[=dx12|vulkan|rt]  a transparent window: wgpu draws a native viewport under the web page (probe);
+//                  rt: the Black Page geometry with hardware ray-traced CRT soft shadows, every frame (Vulkan)
 //   --test-window  keep the window on top without taking focus (for unattended screen captures)
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod bridge;
@@ -36,8 +37,8 @@ fn view_stats(shell: tauri::State<Shell>, reset: bool) -> serde_json::Value {
     let st = |a: &Vec<f64>| { if a.is_empty() { return serde_json::Value::Null; } let mut s = a.clone(); s.sort_by(|x, y| x.partial_cmp(y).unwrap());
         let q = |p: f64| (s[((p * s.len() as f64) as usize).min(s.len() - 1)] * 100.0).round() / 100.0;
         serde_json::json!({ "n": s.len(), "p50": q(0.5), "p95": q(0.95), "max": q(1.0) }) };
-    let out = serde_json::json!({ "backend": v.backend, "frames": v.frames, "error": v.error, "status": v.status, "skipped": v.skipped, "present_interval_ms": st(&v.intervals), "input_to_submit_ms": st(&v.input_to_submit), "rect": v.rect });
-    if reset { v.intervals.clear(); v.input_to_submit.clear(); }
+    let out = serde_json::json!({ "backend": v.backend, "frames": v.frames, "error": v.error, "status": v.status, "skipped": v.skipped, "present_interval_ms": st(&v.intervals), "input_to_submit_ms": st(&v.input_to_submit), "rt_gpu_ms": st(&v.gpu_ms), "rect": v.rect });
+    if reset { v.intervals.clear(); v.input_to_submit.clear(); v.gpu_ms.clear(); }
     out
 }
 
@@ -133,9 +134,9 @@ fn main() {
             if test_window { b = b.always_on_top(true).focused(false).position(40.0, 40.0); }
             let win = b.build()?;
             if let Some(nv) = &native_view {
-                let backends = if nv == "vulkan" { wgpu::Backends::VULKAN } else { wgpu::Backends::DX12 };
                 let w2 = win.clone();
-                native_view::start(win.clone(), move || w2.inner_size().map(|s| (s.width, s.height)).unwrap_or((0, 0)), view_state.clone(), backends);   // size until the page reports it
+                let mode = if nv.is_empty() { "dx12".to_string() } else { nv.clone() };
+                native_view::start(win.clone(), move || w2.inner_size().map(|s| (s.width, s.height)).unwrap_or((0, 0)), view_state.clone(), mode);   // size until the page reports it
             }
             let _ = app.handle().get_webview_window("main");
             Ok(())

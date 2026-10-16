@@ -24,6 +24,8 @@ Switches (all optional):
 | `--hidden` | never show the window (rendering still runs) |
 | `--data=<dir>` | WebView2 profile folder (a new one is a cold start) |
 | `--browser-args="..."` | extra Chromium switches, e.g. `--enable-dawn-features=disable_robustness` |
+| `--native-viewport=dx12\|vulkan\|rt` | transparent window with a wgpu viewport under the page (use `--page=/desktop/bench/native_view.html`); `rt` ray-traces the Black Page geometry (`VS_RT_GEOM`) on Vulkan |
+| `--test-window` | keep the window on top without focus (for screen captures) |
 
 `VS_REPO` and `VS_OUT` override the repo root and the output folder (default: the spike folder on G:).
 `npx @tauri-apps/cli@2 build` (from `desktop/`) makes the NSIS installer.
@@ -43,6 +45,12 @@ In-page benches (`desktop/bench/bench.js`): `exportBench` (paths `none`, `readba
 `ffmpeg`; `body: 'blob'` for raw pixels), `transportBench`, `leakTest`, `playBench`, `editorRender`, `bridgeBench`
 (with `node desktop/tools/udp_sender.mjs 10 8799 8798` and the Node bridge from `spike-engine-bridge`).
 `desktop/bench/wgsl_bench.html` is the browser half of the shader probe.
+
+Beyond WebGPU (LEARNINGS §10): `exportGeometry({f})` in the editor writes the scene's triangles and camera to
+`rust_taurit\`; `desktop/rt-probe` traces CRT soft shadows on them with hardware ray queries and a software BVH
+(`--k=0,3,5 --samples=16 --backend=vulkan --browser=desktop/bench/rt_data`), and `desktop/bench/rt_bench.html` runs the
+software tracer in a browser. `NATIVE_VIEW=rt node desktop/tools/drive.mjs tauri /desktop/bench/native_view.html
+"syntheticDrag({ms: 6000})"` runs the native viewport; `desktop/tools/capture_window.ps1` screen-captures it.
 
 ## Rules learned
 

@@ -36,7 +36,8 @@ window.syntheticDrag = async ({ ms = 5000, every = 8 } = {}) => {
   const tick = now => { if (last != null) raf.push(now - last); last = now; if (on) requestAnimationFrame(tick); }; requestAnimationFrame(tick);
   const t0 = performance.now();
   while (performance.now() - t0 < ms) {
-    const t = performance.now(); await T.core.invoke('view_input', { dx: 2, dy: 0.5, t: performance.timeOrigin + t }); inv.push(performance.now() - t);
+    // a side-to-side drag (the orbit swings back and forth around the start instead of drifting away)
+    const t = performance.now(); await T.core.invoke('view_input', { dx: 2 * Math.cos((t - t0) / 3000 * 2 * Math.PI), dy: 0, t: performance.timeOrigin + t }); inv.push(performance.now() - t);
     await new Promise(r => setTimeout(r, every));
   }
   on = false;

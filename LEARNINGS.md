@@ -761,6 +761,100 @@ macOS and Linux, and Electron itself.
 longest about 25 minutes (an export run that hung when WebView2's renderer crashed). No other session held the lock, so there were no waits or overlaps.
 `nvidia-smi` read 11–31% before runs.
 
+## 10. Beyond WebGPU: what a Rust backend unlocks (branch `spike-rust-tauri`)
+
+Connor's follow-up to §9: with a Rust process in the app, the renderer isn't limited to WebGPU. Two probes: hardware
+ray tracing on the Black Page geometry, and a native viewport drawn under the web editor in the same window.
+
+**Answer.** Both work. Hardware ray-traced soft shadows from the CRT cost 0.2 ms a frame at 1080p and 16 samples,
+8–28× less than the same shadows traced in software (which WebGPU can do: 1.5–5.6 ms), and the cost doesn't grow with
+triangle count. A native Vulkan or DX12 viewport composites under a transparent WebView2, so the HTML panels, HUD and
+gizmos sit over it, at the display's 160 Hz with 3.6 ms from a page input event to the native frame's submit. Together
+they gave a live, orbitable, hardware ray-traced view of the Black Page set inside an HTML layout. The catch is that
+the native viewport can't share textures with the page: native and web layers can be stacked, not shaded together, so
+using native rendering in the editor means the native side draws the whole picture, which is a port of the renderer
+and its looks out of three.js and TSL.
+
+### What native unlocks that WebGPU doesn't
+
+From wgpu 30 on this machine (RTX 4090, driver features as reported by the adapter):
+
+| Feature | WebGPU in Chrome 155 | wgpu 30 native | What it would buy Virtual Shot |
+|---|---|---|---|
+| Ray queries (inline ray tracing) | no | Vulkan only (`EXPERIMENTAL_RAY_QUERY`; wgpu's DX12 backend reported none) | Shadows (the open Shadows work: CRT soft shadows, haze light shafts), AO, reflections, a path tracer for stills |
+| Ray-tracing pipelines, mesh shaders | no | experimental | Full path tracing; dense geometry (arch viz) |
+| 64-bit atomics, f64, binding arrays (bindless), push constants | no or limited | yes | GPU-built BVHs, splatting, many textures without rebinding |
+| Robustness checks | always on | off with trusted shaders | 4–23% on §9's probe |
+| Vendor SDKs (DLSS, OptiX/OIDN denoisers, NVENC, CUDA) | no | through raw Vulkan/DX12 next to wgpu | Denoised path tracing, GPU-side video encode without readback |
+
+### Probe 1: ray-traced soft shadows from the CRT (`desktop/rt-probe`)
+
+The editor's scene at f450 (2,312 triangles; the CRT screen meshes are the light and the glow quads are left out),
+exported by `bench.js exportGeometry`. One primary ray a pixel, then 16 shadow rays to stratified points on the glass;
+the same WGSL shading with two tracers: hardware ray queries, or a binned-SAH BVH walked in plain WGSL (which a browser
+can run). Each triangle split into 4^k to stand in for denser assets. GPU ms at 1920×1080, median of 60 runs; all
+variants produce the same image (mean radiance equal to six digits).
+
+| Triangles | HW ray query (Vulkan) | Software BVH, Vulkan | Software BVH, DX12 | Software BVH in Chrome / WebView2 |
+|---|---|---|---|---|
+| 2,312 (Black Page as is) | 0.19 | 1.54 | 1.74 | 1.77–1.85 |
+| 147,968 (k = 3) | 0.19 | 2.70 | 3.58 | 3.50–3.74 |
+| 2,367,488 (k = 5) | 0.20 | 4.71 | 5.62 | 5.31–5.37 |
+
+- At 64 samples the hardware path took 0.63–0.66 ms at every size.
+- The hardware acceleration structure builds on the GPU in 1–21 ms; the spike's CPU BVH builder (single-threaded) took
+  2 ms, 0.13 s and 2.3 s. That gap matters for animated and skinned meshes (characters), which need rebuilds or refits
+  every frame.
+- **For Black Page itself, software ray tracing in the browser is affordable** (1.8 ms for 16-sample soft shadows), so
+  shadows don't by themselves force leaving WebGPU. Hardware tracing pays off with dense scenes, many samples or
+  bounces (path tracing), and animated geometry.
+- Images: `rust_tauri\rt\img_s16\` and `img_s64\` (`vulkan_hw_k0.png` and the rest).
+
+### Probe 2: a native viewport under the web page (`--native-viewport`)
+
+The shell's window is made transparent, a wgpu swapchain is created on it, and the page (`desktop/bench/native_view.html`,
+a mock editor layout) leaves the viewport transparent and reports its rectangle and camera drags through `invoke`.
+Unattended runs used a synthetic drag every 8 ms for 6 s; screen captures in `rust_tauri\native_view\`.
+
+| | DX12 test pattern | Vulkan test pattern | Vulkan, hardware ray-traced Black Page |
+|---|---|---|---|
+| Native present interval p50 / p95 | 6.37 / 6.41 ms | 6.37 / 6.41 ms | 6.37 / 6.43 ms |
+| Page input event → native frame submitted, p50 / p95 | 3.62 / 6.69 ms | 3.74 / 6.57 ms | 3.65 / 6.59 ms |
+| Page `invoke` for one drag event, p50 | 0.9 ms | 0.9 ms | 1.0 ms |
+| Page's own frame interval | 6.3 ms | 6.2 ms | 6.3 ms |
+| Ray-traced pass, 1530×1014, GPU | | | 0.30 ms p50 |
+
+- The HTML panels, the HUD label and the CSS gizmo circle draw over the native picture, composited by the desktop;
+  the page keeps its own 160 Hz alongside.
+- If the native renderer stops presenting, the transparent window shows the desktop behind it (the first run, before a
+  uniform-layout bug was fixed), so a real build needs an opaque fallback.
+- Not tested: window resizing and maximising (the swapchain follows the size the page reports), the real editor page
+  with its WebGPU canvas removed, multiple monitors and DPI changes.
+
+### What this means for the architecture
+
+- **Native and web layers stack; they don't mix.** WebView2 can't import a texture from the native device (or export
+  one), so a native shadow or ray-traced pass can't feed three.js's shading. Each layer is a whole picture, composited
+  over or under the other with alpha.
+- **So there are three ways to use native rendering:**
+  1. A **native render worker** for Render mode: the same scene document, a Rust renderer with ray tracing or path
+     tracing, frames straight into ffmpeg. The editor keeps three.js. Costs a second renderer kept at parity with the
+     first (the spike shows parity is reachable but is real work, §1–6).
+  2. A **native viewport in the editor** (this probe): the panels stay HTML, the viewport is Rust. The time core
+     (`evaluate`) can stay JavaScript and send each frame's state over `invoke` (about 1 ms), or be ported. Costs the
+     whole three.js renderer and every TSL look ported to Rust and WGSL, plus glTF loading, skinning and the 2D layers
+     (the chat is Canvas 2D today).
+  3. **Stay WebGPU and trace in software** where it's cheap enough (Black Page shadows: 1.8 ms), keeping one renderer.
+- **Recommendation:** for the open Shadows work, try option 3 first (a software BVH in WGSL inside the three.js
+  renderer; this probe's tracer is a starting point). Reach for native when a scene needs it (dense arch-viz models,
+  characters, path-traced stills), and then as option 1, a Render-mode worker, before considering option 2. Option 2 is
+  the "becomes a native app" decision: proven to work here, but it trades the browser and artifact path and the
+  three.js ecosystem for full control of the GPU.
+
+**GPU log.** The probes ran under `.gpu.lock` in short runs (seconds each; the longest about a minute), with
+`nvidia-smi` at 11–17% before each and no other holder, while Connor worked in Virtual Cut Dev. The test windows stayed
+on top without taking focus for about 6 s each.
+
 ## Running the spike
 
 ```

@@ -114,6 +114,11 @@ item names the section of the sketch it changes and the section of `LEARNINGS.md
     data from a localhost port inside the app, not the custom URI scheme (3× slower for 8 MB uploads); POST raw pixels
     as Blobs (Chromium kept typed-array bodies until the renderer crashed).
 
+27. **Native rendering, if ever, starts as a Render-mode worker.** A native wgpu viewport does composite under the
+    web panels in one Tauri window, and hardware ray tracing there costs 0.2 ms for the CRT's soft shadows, but native
+    and web layers can't share textures, so a native viewport means porting the whole renderer and its looks. Try
+    software ray tracing in WGSL first (1.8 ms for Black Page). (LEARNINGS §10)
+
 ## Still open
 
 - Shadows (none yet; haze light shafts recommended first), GPU text for animated 2D layers, a cheaper Render-quality
