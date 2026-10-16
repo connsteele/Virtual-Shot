@@ -35,10 +35,12 @@ if (host.startsWith('tauri')) {
   const a = [`--page=${page}`, `--cdp=${PORT}`, `--data=${data}`];
   if (host === 'tauri-node') a.push(`--server=${NODE_BASE}`);
   if (host === 'tauri-http') a.push('--http=8792', '--server=http://localhost:8792');
+  if (process.env.EXTRA_ARGS) a.push(`--browser-args=${process.env.EXTRA_ARGS}`);   // extra Chromium switches for WebView2
   proc = spawn(EXE, a, { stdio: 'ignore' });
 } else {
   const a = [`--remote-debugging-port=${PORT}`, `--user-data-dir=${data}`, '--no-first-run', '--no-default-browser-check',
     '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--window-size=1600,900'];
+  if (process.env.EXTRA_ARGS) a.push(...process.env.EXTRA_ARGS.split(' '));
   if (host === 'chrome-headless') a.push('--headless=new', '--enable-unsafe-webgpu', 'about:blank');
   else a.push(`--app=${NODE_BASE}${page}`);
   proc = spawn(CHROME, a, { stdio: 'ignore' });

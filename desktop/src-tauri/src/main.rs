@@ -5,6 +5,7 @@
 //   --cdp      open WebView2's DevTools port, so tools/headless-style scripts can drive and measure the page
 //   --data     WebView2 user data folder (a fresh one measures a cold start: no shader cache)
 //   --http=<port>  also serve the same routes on http://localhost:<port> from this process (use with --server)
+//   --browser-args="..."  extra Chromium switches for WebView2 (e.g. --enable-dawn-features=disable_robustness)
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod bridge;
 mod serve;
@@ -74,6 +75,7 @@ fn main() {
     let base = arg("server").unwrap_or_else(|| "http://vs.localhost".into());
     let cdp = arg("cdp");
     let data = arg("data");
+    let browser_args = arg("browser-args");
     let hidden = flag("hidden");
     if let Some(p) = arg("http").and_then(|p| p.parse::<u16>().ok()) {
         serve::listen_http(server.clone(), p).expect("http port");
@@ -98,6 +100,7 @@ fn main() {
             // Tauri's own WebView2 switches, plus the DevTools port when asked for
             let mut extra = String::from("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection");
             if let Some(p) = &cdp { extra.push_str(&format!(" --remote-debugging-port={p}")); }
+            if let Some(a) = &browser_args { extra.push(' '); extra.push_str(a); }
             b = b.additional_browser_args(&extra);
             if let Some(d) = &data { b = b.data_directory(PathBuf::from(d)); }
             b.build()?;
