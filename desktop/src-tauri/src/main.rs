@@ -6,8 +6,11 @@
 //   --data     WebView2 user data folder (a fresh one measures a cold start: no shader cache)
 //   --http=<port>  also serve the same routes on http://localhost:<port> from this process (use with --server)
 //   --browser-args="..."  extra Chromium switches for WebView2 (e.g. --enable-dawn-features=disable_robustness)
+//   --native-viewport[=dx12|vulkan]  a transparent window: wgpu draws a native viewport under the web page (probe)
+//   --test-window  keep the window on top without taking focus (for unattended screen captures)
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod bridge;
+mod native_view;
 mod serve;
 
 use std::path::PathBuf;
@@ -16,7 +19,27 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tauri::ipc::{Channel, InvokeBody, Request};
 use tauri::Manager;
 
-struct Shell { server: Arc<serve::Server>, started: Instant, started_epoch_ms: f64 }
+struct Shell { server: Arc<serve::Server>, started: Instant, started_epoch_ms: f64, view: Arc<std::sync::Mutex<native_view::ViewState>> }
+
+/// The page tells the native viewport where it is (physical pixels, from getBoundingClientRect × devicePixelRatio).
+#[tauri::command]
+fn view_rect(shell: tauri::State<Shell>, rect: [f32; 4], win: [u32; 2]) { let mut v = shell.view.lock().unwrap(); v.rect = rect; v.win = win; }
+/// A camera drag from the page, with the page's event time (epoch ms) for input-to-frame latency.
+#[tauri::command]
+fn view_input(shell: tauri::State<Shell>, dx: f32, dy: f32, t: f64) {
+    let mut v = shell.view.lock().unwrap(); v.orbit[0] += dx; v.orbit[1] += dy; v.input_epoch_ms = t; v.pending_input = true;
+}
+/// Native viewport stats: present intervals and input-to-submit latency (p50/p95/max), optionally reset.
+#[tauri::command]
+fn view_stats(shell: tauri::State<Shell>, reset: bool) -> serde_json::Value {
+    let mut v = shell.view.lock().unwrap();
+    let st = |a: &Vec<f64>| { if a.is_empty() { return serde_json::Value::Null; } let mut s = a.clone(); s.sort_by(|x, y| x.partial_cmp(y).unwrap());
+        let q = |p: f64| (s[((p * s.len() as f64) as usize).min(s.len() - 1)] * 100.0).round() / 100.0;
+        serde_json::json!({ "n": s.len(), "p50": q(0.5), "p95": q(0.95), "max": q(1.0) }) };
+    let out = serde_json::json!({ "backend": v.backend, "frames": v.frames, "error": v.error, "status": v.status, "skipped": v.skipped, "present_interval_ms": st(&v.intervals), "input_to_submit_ms": st(&v.input_to_submit), "rect": v.rect });
+    if reset { v.intervals.clear(); v.input_to_submit.clear(); }
+    out
+}
 
 fn epoch_ms() -> f64 { SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs_f64() * 1000.0 }
 
@@ -77,19 +100,22 @@ fn main() {
     let data = arg("data");
     let browser_args = arg("browser-args");
     let hidden = flag("hidden");
+    let native_view = args.iter().find_map(|a| a.strip_prefix("--native-viewport").map(|r| r.trim_start_matches('=').to_string()));
+    let test_window = flag("test-window");
+    let view_state = Arc::new(std::sync::Mutex::new(native_view::ViewState::default()));
     if let Some(p) = arg("http").and_then(|p| p.parse::<u16>().ok()) {
         serve::listen_http(server.clone(), p).expect("http port");
     }
 
     let scheme_server = server.clone();
     tauri::Builder::default()
-        .manage(Shell { server, started, started_epoch_ms })
+        .manage(Shell { server, started, started_epoch_ms, view: view_state.clone() })
         // each request on its own thread: frame uploads encode in parallel, and file reads never block the webview
         .register_asynchronous_uri_scheme_protocol("vs", move |_ctx, req, responder| {
             let s = scheme_server.clone();
             std::thread::spawn(move || responder.respond(s.handle(req)));
         })
-        .invoke_handler(tauri::generate_handler![native_info, save_rgba_ipc, echo_ipc, bridge_listen])
+        .invoke_handler(tauri::generate_handler![native_info, save_rgba_ipc, echo_ipc, bridge_listen, view_rect, view_input, view_stats])
         .setup(move |app| {
             let url = format!("{base}{page}");
             let mut b = tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::External(url.parse()?))
@@ -103,7 +129,14 @@ fn main() {
             if let Some(a) = &browser_args { extra.push(' '); extra.push_str(a); }
             b = b.additional_browser_args(&extra);
             if let Some(d) = &data { b = b.data_directory(PathBuf::from(d)); }
-            b.build()?;
+            if native_view.is_some() { b = b.transparent(true); }
+            if test_window { b = b.always_on_top(true).focused(false).position(40.0, 40.0); }
+            let win = b.build()?;
+            if let Some(nv) = &native_view {
+                let backends = if nv == "vulkan" { wgpu::Backends::VULKAN } else { wgpu::Backends::DX12 };
+                let w2 = win.clone();
+                native_view::start(win.clone(), move || w2.inner_size().map(|s| (s.width, s.height)).unwrap_or((0, 0)), view_state.clone(), backends);   // size until the page reports it
+            }
             let _ = app.handle().get_webview_window("main");
             Ok(())
         })

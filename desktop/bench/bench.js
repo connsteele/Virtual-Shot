@@ -137,3 +137,28 @@ export async function bridgeBench({ seconds = 10, nodePort = 8799, rustPort = 87
     return { n: a.length, p50: q(0.5), p95: q(0.95), max: q(1) }; };
   return { block, node_ws_ms: st(lat.node), rust_channel_ms: st(lat.rust), rust_receive_stamp_ms: st(lat.rust_stamp) };
 }
+
+/** World-space triangles of the editor's 3D scene at frame f (the shot camera's view), for the ray-tracing probe
+ *  (desktop/rt-probe): positions f32 xyz then u32 indices to <dir>/<name>.bin, camera and glass frame to .json.
+ *  The CRT screen meshes are left out (they are the light) and so are the glow billboards (unnamed quads). */
+export async function exportGeometry({ f = 450, dir = 'rust_tauri/rt', name = 'black_page' } = {}) {
+  const E = window.VS.E, s = E.shot;
+  E.setView('camera'); E.frame = f; E.renderNow('render', { output: true });
+  s.scene.updateMatrixWorld(true); s.camera.updateMatrixWorld(true);
+  const pos = [], idx = [], meshes = [];
+  s.scene.traverseVisible(o => {
+    if (!o.isMesh || !o.name || /screen/.test(o.name)) return;
+    const g = o.geometry, p = g.attributes.position, base = pos.length / 3, v = p.constructor && { x: 0, y: 0, z: 0 }, e = o.matrixWorld.elements;
+    for (let i = 0; i < p.count; i++) { const x = p.getX(i), y = p.getY(i), z = p.getZ(i);
+      pos.push(e[0] * x + e[4] * y + e[8] * z + e[12], e[1] * x + e[5] * y + e[9] * z + e[13], e[2] * x + e[6] * y + e[10] * z + e[14]); }
+    const n0 = idx.length; if (g.index) for (let i = 0; i < g.index.count; i++) idx.push(base + g.index.getX(i)); else for (let i = 0; i < p.count; i++) idx.push(base + i);
+    meshes.push({ name: o.name, tris: (idx.length - n0) / 3 });
+  });
+  const P = new Float32Array(pos), I = new Uint32Array(idx), bin = new Uint8Array(P.byteLength + I.byteLength);
+  bin.set(new Uint8Array(P.buffer), 0); bin.set(new Uint8Array(I.buffer), P.byteLength);
+  const c = s.camera, meta = { frame: f, vertices: P.length / 3, triangles: I.length / 3, meshes, glass: E.ix.glass,
+    camera: { matrixWorld: [...c.matrixWorld.elements], fov: c.fov, aspect: c.aspect } };
+  await post(`/save/${dir}/${name}_f${f}.bin`, new Blob([bin]));
+  await post(`/save/${dir}/${name}_f${f}.json`, JSON.stringify(meta, null, 1));
+  return { ...meta, meshes: meshes.length };
+}

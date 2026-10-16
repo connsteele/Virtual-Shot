@@ -1,0 +1,15 @@
+[package]
+name = "rt-probe"
+version = "0.0.0"
+description = "Spike: ray-traced soft shadows from the CRT on the Black Page geometry, hardware ray queries vs a software BVH in WGSL"
+edition = "2021"
+publish = false
+
+[dependencies]
+wgpu = "30"
+pollster = "0.4"
+serde_json = "1"
+png = "0.18"
+
+[profile.release]
+codegen-units = 4

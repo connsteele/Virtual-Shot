@@ -1,0 +1,47 @@
+<!doctype html><meta charset="utf-8"><title>Native viewport probe</title>
+<style>
+  /* the page is transparent where the viewport is: the shell's native wgpu renderer shows through */
+  html, body { margin: 0; height: 100%; background: transparent; font: 14px system-ui, sans-serif; color: #ddd; overflow: hidden; }
+  #app { display: grid; grid-template: 44px 1fr 180px / 280px 1fr 300px; height: 100%; }
+  .panel { background: #1b1d22; border: 1px solid #2c2f36; padding: 10px; box-sizing: border-box; }
+  #top { grid-column: 1 / 4; display: flex; gap: 10px; align-items: center; }
+  #view { position: relative; outline: 1px solid #e8b04a; cursor: grab; }
+  #hud { position: absolute; left: 12px; top: 10px; padding: 4px 8px; background: rgba(0, 0, 0, 0.55); border-radius: 4px; }
+  #gizmo { position: absolute; right: 16px; bottom: 16px; width: 64px; height: 64px; border-radius: 50%; border: 2px solid rgba(255, 255, 255, 0.7); }
+  #timeline { grid-column: 1 / 4; }
+  button { background: #2c2f36; color: #ddd; border: 1px solid #444; border-radius: 4px; padding: 4px 10px; }
+</style>
+<div id="app">
+  <div id="top" class="panel"><b>Virtual Shot</b><button>Edit</button><button>Play</button><button>Render</button><span id="stat"></span></div>
+  <div class="panel">Outliner (HTML)</div>
+  <div id="view"><div id="hud">Native viewport · HTML overlay</div><div id="gizmo"></div></div>
+  <div class="panel">Inspector (HTML)</div>
+  <div id="timeline" class="panel">Timeline (HTML)</div>
+</div>
+<script type="module">
+// The page half of the native-viewport probe (desktop/src-tauri/src/native_view.rs): reports the viewport's rectangle
+// in physical pixels, forwards camera drags with their event time, and exposes a synthetic drag for unattended runs.
+const T = window.__TAURI__, view = document.getElementById('view');
+const rect = () => { const r = view.getBoundingClientRect(), d = devicePixelRatio; return T.core.invoke('view_rect', { rect: [r.left * d, r.top * d, r.width * d, r.height * d], win: [Math.round(innerWidth * d), Math.round(innerHeight * d)] }); };
+new ResizeObserver(rect).observe(view); addEventListener('resize', rect); await rect();
+let drag = null;
+view.onpointerdown = e => { drag = [e.clientX, e.clientY]; view.setPointerCapture(e.pointerId); };
+view.onpointerup = () => { drag = null; };
+view.onpointermove = e => { if (!drag) return; const dx = e.clientX - drag[0], dy = e.clientY - drag[1]; drag = [e.clientX, e.clientY];
+  T.core.invoke('view_input', { dx, dy, t: performance.timeOrigin + e.timeStamp }); };
+/** Unattended run: a drag event every `every` ms for `ms`, then the shell's stats plus the page's own frame and invoke timings. */
+window.syntheticDrag = async ({ ms = 5000, every = 8 } = {}) => {
+  await T.core.invoke('view_stats', { reset: true });
+  const inv = [], raf = []; let last = null, on = true;
+  const tick = now => { if (last != null) raf.push(now - last); last = now; if (on) requestAnimationFrame(tick); }; requestAnimationFrame(tick);
+  const t0 = performance.now();
+  while (performance.now() - t0 < ms) {
+    const t = performance.now(); await T.core.invoke('view_input', { dx: 2, dy: 0.5, t: performance.timeOrigin + t }); inv.push(performance.now() - t);
+    await new Promise(r => setTimeout(r, every));
+  }
+  on = false;
+  const st = a => { const s = [...a].sort((x, y) => x - y), q = p => Math.round(s[Math.min(s.length - 1, Math.floor(p * s.length))] * 100) / 100; return { n: s.length, p50: q(0.5), p95: q(0.95), max: q(1) }; };
+  return { native: await T.core.invoke('view_stats', { reset: false }), page_raf_interval_ms: st(raf), invoke_view_input_ms: st(inv), dpr: devicePixelRatio };
+};
+window.VS_READY = true;
+</script>
