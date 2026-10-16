@@ -7,10 +7,12 @@
 //   --http=<port>  also serve the same routes on http://localhost:<port> from this process (use with --server)
 //   --browser-args="..."  extra Chromium switches for WebView2 (e.g. --enable-dawn-features=disable_robustness)
 //   --native-viewport[=dx12|vulkan|rt]  a transparent window: wgpu draws a native viewport under the web page (probe);
-//                  rt: the Black Page geometry with hardware ray-traced CRT soft shadows, every frame (Vulkan)
+//                  rt: the Black Page geometry with hardware ray-traced CRT soft shadows, every frame (Vulkan);
+//                  replay: the Black Page renderer's captured GPU work run natively, frame by frame (VS_REPLAY)
 //   --test-window  keep the window on top without taking focus (for unattended screen captures)
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod bridge;
+mod native_replay;
 mod native_view;
 mod serve;
 

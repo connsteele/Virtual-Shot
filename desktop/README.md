@@ -52,6 +52,17 @@ Beyond WebGPU (LEARNINGS §10): `exportGeometry({f})` in the editor writes the s
 software tracer in a browser. `NATIVE_VIEW=rt node desktop/tools/drive.mjs tauri /desktop/bench/native_view.html
 "syntheticDrag({ms: 6000})"` runs the native viewport; `desktop/tools/capture_window.ps1` screen-captures it.
 
+## Native replay of the renderer (LEARNINGS §11)
+
+```
+INJECT=desktop/capture/gpu_capture.js node desktop/tools/drive.mjs chrome-headless "/src/index.html?f=720&bg" "<render frames, GPUCAP.note('frame <name>') before each and GPUCAP.note('frame end') after, then GPUCAP.dump('<name>')>"
+desktop/replay/target/release/vs-replay.exe <capture.json> --backend=vulkan|dx12 [--unchecked] [--reps=20] [--refs=<dir with ref_*.png>] [--out=<dir>] [--export=<n> --export-out=<file.mov> --export-frames="720 render,300 render"]
+```
+
+The capture script records every WebGPU call (shaders, pipelines, uploads, passes) with its data; the replay runs
+them through wgpu, times every pass, compares the picture with the browser's and can export through ffmpeg.
+`--native-viewport=replay` (with `VS_REPLAY=<capture.json>`) plays a captured range in the shell's native viewport.
+
 ## Rules learned
 
 - Serve the page and bulk data from a localhost port inside the app, not the `vs://` scheme: wry reads custom-scheme

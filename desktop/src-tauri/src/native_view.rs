@@ -65,7 +65,7 @@ pub fn start<W>(window: W, size: impl Fn() -> (u32, u32) + Send + 'static, state
 where W: raw_window_handle::HasWindowHandle + raw_window_handle::HasDisplayHandle + Send + 'static {
     std::thread::Builder::new().name("native-view".into()).spawn(move || {
         let st = state.clone();
-        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(window, size, st, &mode))) {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| if mode == "replay" { crate::native_replay::run_replay(window, size, st) } else { run(window, size, st, &mode) })) {
             Ok(Err(e)) => state.lock().unwrap().error = Some(e),
             Err(p) => state.lock().unwrap().error = Some(format!("panic: {}", p.downcast_ref::<String>().cloned().or(p.downcast_ref::<&str>().map(|s| s.to_string())).unwrap_or_default())),
             Ok(Ok(())) => {}

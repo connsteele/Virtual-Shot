@@ -1,0 +1,15 @@
+[package]
+name = "vs-replay"
+version = "0.0.0"
+description = "Spike: runs a WebGPU capture of the Black Page renderer (desktop/capture) natively through wgpu, to compare per-pass GPU time, pictures and export speed with the browser"
+edition = "2021"
+publish = false
+
+[dependencies]
+wgpu = "30"
+pollster = "0.4"
+serde_json = "1"
+png = "0.18"
+
+[profile.release]
+codegen-units = 4

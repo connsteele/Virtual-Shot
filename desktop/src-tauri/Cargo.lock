@@ -4031,6 +4031,17 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tiny_http",
+ "vs-replay",
+ "wgpu",
+]
+
+[[package]]
+name = "vs-replay"
+version = "0.0.0"
+dependencies = [
+ "png 0.18.1",
+ "pollster",
+ "serde_json",
  "wgpu",
 ]
 

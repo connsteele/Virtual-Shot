@@ -119,6 +119,11 @@ item names the section of the sketch it changes and the section of `LEARNINGS.md
     and web layers can't share textures, so a native viewport means porting the whole renderer and its looks. Try
     software ray tracing in WGSL first (1.8 ms for Black Page). (LEARNINGS §10)
 
+28. **Rendering the existing look natively isn't faster.** three.js's own WGSL run natively through wgpu took 2–18%
+    less GPU time on Vulkan for Render-quality frames, 10% more at Play quality, and about 1.8× as long on wgpu's DX12
+    backend. Native export is 10–26% quicker by overlapping readback. Budget performance work for the haze march
+    (75–94% of a Render-quality frame) rather than a platform change. (LEARNINGS §11)
+
 ## Still open
 
 - Shadows (none yet; haze light shafts recommended first), GPU text for animated 2D layers, a cheaper Render-quality

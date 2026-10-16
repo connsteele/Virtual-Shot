@@ -855,6 +855,90 @@ Unattended runs used a synthetic drag every 8 ms for 6 s; screen captures in `ru
 `nvidia-smi` at 11–17% before each and no other holder, while Connor worked in Virtual Cut Dev. The test windows stayed
 on top without taking focus for about 6 s each.
 
+## 11. The Black Page renderer run natively (branch `spike-rust-tauri`)
+
+Connor's ask: use native hardware and Rust for as much of the rendering as possible, to see how much faster it gets.
+Rather than re-port the look by hand (weeks of parity work), the spike ran **the renderer's exact GPU work natively**:
+`desktop/capture/gpu_capture.js` records every WebGPU call three.js makes while the viewer renders (the WGSL it
+generates, pipelines, buffers, texture uploads, every pass and draw), and `desktop/replay` (Rust, wgpu 30) executes
+the same calls on Vulkan or DX12. Same shaders, same data, same passes, so the timings compare the platforms, not
+two different renderers.
+
+**Answer.** The same rendering is not meaningfully faster natively. On Vulkan, Render-quality frames took 2–18% less GPU
+time than in Chrome and the Play-quality frame 10% more; through wgpu's DX12 backend everything heavy took about 1.8×
+as long. Turning off bounds
+checks changed nothing. The GPU cost is the look's own work (the haze march is 93% of f720 at Render quality), and
+Chrome already runs it on the same GPU with little overhead. What native did buy: **exports in 10–26% less time**
+(rendering, readback and ffmpeg overlapped, so it runs at the GPU's own speed), **hardware ray tracing** (§10), and
+the picture drawn straight into the app window. Bigger speedups have to come from changing the work (the haze march
+especially), which helps in the browser just as much.
+
+### How faithful the replay is
+
+- 4 frames (720 and 1100 at Render quality, 720 at Play, 300 at Render) and two 120-frame ranges (f600–719 at Play
+  and at Render quality) captured in headless Chrome 155: 2,302 to 52,838 WebGPU calls and 89 MB to 1.5 GB of data
+  (the chat canvas is re-uploaded every frame, 12.7 MB).
+- The native frames match the browser's own: 86.7–95.3 dB on the four frames (largest difference 1–3/255), 81–94 dB
+  on the range's reference frames. three.js's generated WGSL compiled in wgpu's naga without changes.
+
+### Per-pass GPU time, same shaders (median ms, RTX 4090)
+
+| Frame | Pass | Chrome 155 (Dawn, D3D12) | WebView2 155 | wgpu Vulkan | wgpu Vulkan, no bounds checks | wgpu DX12 |
+|---|---|---|---|---|---|---|
+| f720 Render | whole frame | 114.6 | 114.4 | 112.0–112.6 | 111.9 | 194.0 |
+| | haze march | 106.4 | 106.1 | 104.8–105.1 | 104.6 | 186.5 |
+| | depth of field | 7.97 | 8.00 | 7.23–7.25 | 7.08 | 7.26 |
+| f720 Play | whole frame | 5.15 | 5.18 | 5.62–5.69 | 5.72 | 11.55 |
+| | haze march | 3.71 | 3.74 | 4.20–4.22 | 4.29 | 6.48 |
+| | depth of field | 1.27 | 1.25 | 1.20 | 1.18 | 3.49 |
+| f300 Render | whole frame | 31.9 | 31.8 | 30.6–31.0 | 30.6 | 49.7 |
+| f1100 Render | whole frame | 133.9 | 134.2 | 109.8–125.3 | 116.7 | 239.2 |
+
+- The scene pass (all the PSX models, 4× MSAA at 2880×1620) is 0.07–0.15 ms everywhere; lens, focus, light grid and
+  composite are under 0.04 ms each. The look's two passes are the whole bill on every platform.
+- f1100 varied between native runs (109.8 and 125.3 ms); the others were stable within 1%.
+- CPU: three.js's `renderFrame` (including the Canvas 2D chat) took 1.1–2.8 ms in the browser. The replay's 2.6–5 ms
+  is an interpreter walking JSON, not what a native renderer would cost, so it isn't a comparison.
+
+### Export without the browser
+
+Render quality, read back and piped into ffmpeg as ProRes 4444, Vulkan:
+
+| Frames | Native replay | Browser (Chrome headless, Blob uploads to Node's ffmpeg route) |
+|---|---|---|
+| f600–719, in order (120) | 14.6 s (8.2 fps) | 16.1 s (7.4 fps) |
+| f720, f300, f1100 cycled (240) | 19.8–20.0 s (12.0–12.1 fps) | 27.0 s (8.9 fps) |
+
+- Native ran at its GPU floor (f600–719: 120 × 113.7 ms median = 13.6 s of GPU work) by keeping three frames in
+  flight while earlier ones were read back. The browser waits on each frame's `getImageData`. A WebGPU readback ring
+  (`copyTextureToBuffer` and `mapAsync`) would recover some of that in the browser too.
+- The two f600–719 masters match at 81 dB mean per frame, except the first five native frames (25–39 dB): the replay
+  starts that sequence from the state the timing pass left behind, not the one the browser started from.
+
+### The real look in the editor window
+
+`--native-viewport=replay` runs the captured f600–719 Play-quality frames through wgpu on Vulkan every shot frame (60
+fps, looping) and draws them under the transparent editor layout from §10. It's the actual Black Page final look
+(the ringing remote, haze, depth of field, pops) drawn by the Rust process: 5.78 ms of GPU a shot frame (p95 5.98),
+presented at the display's 160 Hz (interval p50 6.37 ms, p95 10.1 ms; the p95 is the replay waiting on its own timing
+readback). Capture: `rust_tauri\native_view\window_replay.png`.
+
+### What this means
+
+- **Moving the existing look to native buys no rendering speed.** The rewrite would cost the three.js ecosystem and
+  the artifact path for a few percent, or a 1.8× loss on wgpu's DX12 backend.
+- **Native earns its keep with what the browser can't do:** hardware ray tracing (§10), the export pipeline, the app
+  window, and later vendor features (denoisers, NVENC from GPU memory). The capture/replay path also shows that a
+  native Render-mode worker could run the three.js look bit-close without porting it, as long as the frames it renders
+  are recorded from the editor (it replays work, it doesn't author it).
+- **The performance lever is the haze march**: 75–94% of a Render-quality frame on every platform. Precomputing the
+  Cycles noise into a 3D texture, fewer steps with temporal accumulation, or a half-resolution march with an upsample
+  would cut it far more than any platform change, in the browser and natively alike.
+
+**Disk and GPU.** Captures and exports for §9–11 use 7.1 GB in `Virtual Shot spike\rust_tauri\` (the two 1.5 GB range
+captures and the export tests are most of it). The GPU work ran in short locked steps (the longest about 2 minutes)
+with no other lock holder.
+
 ## Running the spike
 
 ```

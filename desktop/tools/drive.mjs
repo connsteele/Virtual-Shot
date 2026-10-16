@@ -65,10 +65,13 @@ const send = (method, params = {}) => new Promise(r => { const i = ++id; pending
 const evaluate = async js => { const m = await send('Runtime.evaluate', { expression: `(async () => (${js}))()`, awaitPromise: true, returnByValue: true });
   if (m.result?.exceptionDetails) throw new Error(m.result.exceptionDetails.exception?.description || 'page error'); return m.result?.result?.value; };
 await send('Runtime.enable');
+await send('Page.enable');
+if (process.env.INJECT) await send('Page.addScriptToEvaluateOnNewDocument', { source: fs.readFileSync(process.env.INJECT, 'utf8') });   // before the page's own scripts
 if (host === 'chrome-headless') {
   await send('Emulation.setDeviceMetricsOverride', { width: 1600, height: 900, deviceScaleFactor: 1, mobile: false });
   await send('Page.navigate', { url: NODE_BASE + page });
 }
+if (process.env.INJECT && host !== 'chrome-headless') await send('Page.reload', { ignoreCache: false });   // the page loaded before the script was added
 let ready = false;
 while (!ready) {
   if (performance.now() - t0 > (+process.env.LOAD_TIMEOUT || 180000)) throw new Error('page did not load');

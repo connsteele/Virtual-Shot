@@ -162,3 +162,24 @@ export async function exportGeometry({ f = 450, dir = 'rust_tauri/rt', name = 'b
   await post(`/save/${dir}/${name}_f${f}.json`, JSON.stringify(meta, null, 1));
   return { ...meta, meshes: meshes.length };
 }
+
+/** Per-pass GPU time in the browser for the frames the native replay times (viewer page with ?gputime): each frame
+ *  rendered `reps` times, three's timestamp queries summed by pass name, medians; plus the CPU time of renderFrame. */
+export async function passTimes({ frames = [[720, 'render'], [720, 'play'], [300, 'render'], [1100, 'render']], reps = 10 } = {}) {
+  const VS = window.VS, sh = VS.shot, q = sh.renderer.backend.device.queue; sh.setTiming(true);
+  const med = a => { const s = [...a].sort((x, y) => x - y); return Math.round(s[s.length >> 1] * 1000) / 1000; };
+  const out = {};
+  for (const [f, qual] of frames) {
+    VS.renderFrame(f, qual); await q.onSubmittedWorkDone(); await sh.gpuTimes();   // warm
+    const per = {}, tot = [], cpu = [];
+    for (let i = 0; i < reps; i++) {
+      const c0 = performance.now(); VS.renderFrame(f, qual); cpu.push(performance.now() - c0);
+      await q.onSubmittedWorkDone(); await sleep(20);
+      const t = await sh.gpuTimes(), agg = {}; let s = 0;
+      for (const { name, ms } of t) { agg[name] = (agg[name] || 0) + ms; s += ms; }
+      for (const [k, v] of Object.entries(agg)) (per[k] ||= []).push(v); tot.push(s);
+    }
+    out[`${f} ${qual}`] = { gpu_total_ms: med(tot), cpu_render_frame_ms: med(cpu), passes: Object.entries(per).map(([k, v]) => [k, med(v)]).sort((a, b) => b[1] - a[1]) };
+  }
+  return out;
+}
