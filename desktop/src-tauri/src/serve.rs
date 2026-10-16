@@ -236,16 +236,17 @@ impl Server {
                 if !ok_write_name(&rel) { return text(StatusCode::BAD_REQUEST, "bad out name"); }
                 let dest = self.out.join(&rel);
                 if let Some(d) = dest.parent() { let _ = fs::create_dir_all(d); }
-                // display-referred sRGB frames, tagged and converted as BT.709 (the master was decoded the same way)
+                // display-referred sRGB frames, converted and tagged as BT.709 limited range (the master was decoded the
+                // same way); setparams tags the frames, since the encoder options alone left transfer and primaries unknown
                 let bt709 = ["-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709"];
                 let mut args: Vec<String> = ["-hide_banner", "-loglevel", "warning", "-y", "-f", "rawvideo", "-pix_fmt", "rgba", "-s"]
                     .iter().map(|s| s.to_string()).collect();
                 args.push(format!("{w}x{h}")); args.extend(["-framerate".into(), fps.clone(), "-i".into(), "pipe:0".into()]);
                 let codec = q.get("codec").map(String::as_str).unwrap_or("prores4444");
                 let enc: &[&str] = match codec {
-                    "prores4444" => &["-vf", "scale=out_color_matrix=bt709:out_range=tv,format=yuva444p10le", "-c:v", "prores_ks", "-profile:v", "4", "-vendor", "apl0"],
-                    "prores422hq" => &["-vf", "scale=out_color_matrix=bt709:out_range=tv,format=yuv422p10le", "-c:v", "prores_ks", "-profile:v", "3", "-vendor", "apl0"],
-                    "h264" => &["-vf", "scale=out_color_matrix=bt709:out_range=tv,format=yuv420p", "-c:v", "h264_nvenc", "-preset", "p5", "-tune", "hq", "-rc", "vbr", "-cq", "16", "-b:v", "0"],
+                    "prores4444" => &["-vf", "scale=out_color_matrix=bt709:out_range=tv,format=yuva444p10le,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv", "-c:v", "prores_ks", "-profile:v", "4", "-vendor", "apl0"],
+                    "prores422hq" => &["-vf", "scale=out_color_matrix=bt709:out_range=tv,format=yuv422p10le,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv", "-c:v", "prores_ks", "-profile:v", "3", "-vendor", "apl0"],
+                    "h264" => &["-vf", "scale=out_color_matrix=bt709:out_range=tv,format=yuv420p,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv", "-c:v", "h264_nvenc", "-preset", "p5", "-tune", "hq", "-rc", "vbr", "-cq", "16", "-b:v", "0"],
                     "png" => &["-c:v", "png", "-pix_fmt", "rgba"],
                     _ => return text(StatusCode::BAD_REQUEST, "codec: prores4444 | prores422hq | h264 | png"),
                 };

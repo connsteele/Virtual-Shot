@@ -61,9 +61,9 @@ async function encodePNG(px, w, h) {
 // server (desktop/src-tauri/src/serve.rs), so the spike can tell what a native host buys from what Rust buys.
 const pipes = new Map(); let nextPipe = 1;
 const FF_CODECS = {
-  prores4444: ['-vf', 'scale=out_color_matrix=bt709:out_range=tv,format=yuva444p10le', '-c:v', 'prores_ks', '-profile:v', '4', '-vendor', 'apl0'],
-  prores422hq: ['-vf', 'scale=out_color_matrix=bt709:out_range=tv,format=yuv422p10le', '-c:v', 'prores_ks', '-profile:v', '3', '-vendor', 'apl0'],
-  h264: ['-vf', 'scale=out_color_matrix=bt709:out_range=tv,format=yuv420p', '-c:v', 'h264_nvenc', '-preset', 'p5', '-tune', 'hq', '-rc', 'vbr', '-cq', '16', '-b:v', '0'],
+  prores4444: ['-vf', 'scale=out_color_matrix=bt709:out_range=tv,format=yuva444p10le,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv', '-c:v', 'prores_ks', '-profile:v', '4', '-vendor', 'apl0'],
+  prores422hq: ['-vf', 'scale=out_color_matrix=bt709:out_range=tv,format=yuv422p10le,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv', '-c:v', 'prores_ks', '-profile:v', '3', '-vendor', 'apl0'],
+  h264: ['-vf', 'scale=out_color_matrix=bt709:out_range=tv,format=yuv420p,setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv', '-c:v', 'h264_nvenc', '-preset', 'p5', '-tune', 'hq', '-rc', 'vbr', '-cq', '16', '-b:v', '0'],
 };
 async function ffmpegRoute(req, res, urlPath) {
   const q = new URL(req.url, 'http://x').searchParams, send = (code, body) => { res.writeHead(code, { 'Content-Type': typeof body === 'string' ? 'text/plain' : 'application/json' }); res.end(typeof body === 'string' ? body : JSON.stringify(body)); };

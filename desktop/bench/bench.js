@@ -18,7 +18,7 @@ async function post(url, body) {
  *  path: 'none' (render only) | 'readback' (render + getImageData, nothing written) | 'dataurl' (the current
  *  exporter: toDataURL PNG, POST /save/) | 'rgba' (raw pixels, the host encodes PNG: POST /save-rgba/) |
  *  'rgba-ipc' (raw pixels through Tauri's invoke) | 'ffmpeg' (raw pixels piped to ffmpeg: ProRes 4444 .mov etc.) */
-export async function exportBench({ frames, from = 264, n = 300, path = 'dataurl', dir = 'rust_tauri/bench', quality = 'render', codec = 'prores4444', inflight = 4, fps = 60, body = 'view' } = {}) {
+export async function exportBench({ frames, from = 264, n = 300, path = 'dataurl', dir = 'rust_tauri/bench', quality = 'render', codec = 'prores4444', inflight = 4, fps = 60, body = 'view', png = 'fast' } = {}) {
   const VS = window.VS; frames ||= Array.from({ length: n }, (_, i) => from + i);
   const t = { render: 0, readback: 0, encode: 0, wait: 0 }; let bytes = 0;
   const live = new Set(); const errors = [];
@@ -44,7 +44,7 @@ export async function exportBench({ frames, from = 264, n = 300, path = 'dataurl
       const px = body === 'blob' ? new Blob([data]) : data;
       if (path === 'readback') { i++; continue; }
       await throttle();
-      if (path === 'rgba') track(post(`/save-rgba/${dir}/f${pad(f)}.png?w=${W}&h=${H}`, px));
+      if (path === 'rgba') track(post(`/save-rgba/${dir}/f${pad(f)}.png?w=${W}&h=${H}&c=${png}`, px));   // c: the Rust encoder's level (Node ignores it)
       else if (path === 'rgba-ipc') track(tauri().invoke('save_rgba_ipc', data, { headers: { 'x-path': `${dir}/f${pad(f)}.png`, 'x-w': String(W), 'x-h': String(H) } }));
       else if (path === 'ffmpeg') track(post(`/ffmpeg/frame?id=${pipe.id}&i=${i}`, px));
     }

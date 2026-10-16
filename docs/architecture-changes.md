@@ -102,6 +102,18 @@ item names the section of the sketch it changes and the section of `LEARNINGS.md
     than Cycles and at parity, from a fragment-shader ray march with Blender's noise ported exactly. Port Blender's
     procedural textures rather than imitating them. (§6)
 
+## Desktop app (from `spike-rust-tauri`, LEARNINGS §9; Connor's call)
+
+24. **"Electron later" becomes "a Tauri shell, later, if needed".** The editor ran unchanged in Tauri's WebView2
+    (Chromium, like Chrome): identical frames, GPU time, playback and startup. Every gain measured came from having a
+    native host process (disk writes, an ffmpeg pipe, the bridge's UDP port), which the Node server already gives; so
+    stay browser-first with the Node host, and package as a Tauri shell when an app is wanted. No rendering in Rust.
+25. **Render output: pipe raw frames into ffmpeg** for a ProRes 4444 master (1176 frames at 1080p in 30 s, as fast as
+    the PNG sequence, no encode step after), tagged BT.709 limited range. Works from either host (`/ffmpeg/` routes).
+26. **Host API rules:** keep it HTTP-shaped so the page doesn't care which host serves it; in a Tauri shell serve bulk
+    data from a localhost port inside the app, not the custom URI scheme (3× slower for 8 MB uploads); POST raw pixels
+    as Blobs (Chromium kept typed-array bodies until the renderer crashed).
+
 ## Still open
 
 - Shadows (none yet; haze light shafts recommended first), GPU text for animated 2D layers, a cheaper Render-quality

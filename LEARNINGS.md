@@ -606,6 +606,161 @@ load (three's `compileAsync` covers scene materials but not full-screen passes).
 - The default look is unchanged by all of this: frames 120/300/720/1100 are bit-identical to before the pixel look
   (PSNR infinite).
 
+## 9. Rust + Tauri desktop app (branch `spike-rust-tauri`)
+
+Question: what fundamentally changes, and what is gained or lost, if Virtual Shot becomes a Rust + Tauri desktop app
+instead of a browser three.js app? Built a Tauri 2.12.4 shell around the unchanged editor, ported the local server to
+Rust, then measured each place Rust could take over against Chrome 155 on the same machine (RTX 4090, 160 Hz monitor).
+
+**Answer in one paragraph.** The editor runs unchanged in Tauri's WebView2, which is Chromium 155 like Chrome 155, so
+rendering, WebGPU, shaders, playback and frames are the same: pixel-identical frames, the same GPU time, the same
+startup. Everything Rust added that mattered (writing straight to G:, piping frames into ffmpeg for a ProRes master,
+receiving Blender's camera) came from *having a native host process*, which the Node dev server already is: the same
+features in Node measured the same. Rust only wins where the work leaves the browser entirely: the same WGSL run
+natively through wgpu was 4–23% faster on DX12 and up to 40% faster on Vulkan, but getting that means replacing three.js
+and TSL with a renderer of our own. **Recommendation: stay browser-first with the Node host for now; when a desktop app
+is wanted, make it a Tauri shell only (it replaces "Electron later"); don't move rendering into Rust.**
+
+### What was built
+
+- `desktop/src-tauri/` (Rust): a Tauri window that loads the editor from one of three places: the `vs://` URI scheme
+  served from Rust (`http://vs.localhost` on Windows), an HTTP port inside the shell (`--http=8792`, tiny_http), or the
+  Node dev server (`--server=`). `serve.rs` is `server/serve.mjs` ported route for route (repo, the read-only `/bp/`,
+  `/psx/`, `/wii/` and `/bp-final-ref/` mounts, `/save/`, `/save-scene/`, `/save-rgba/`, `/save-idat/`), so the page
+  needs no changes and still runs in Chrome. New in both hosts: `/ffmpeg/open|frame|close`, raw RGBA frames piped into
+  ffmpeg (ProRes 4444 by default, ProRes 422 HQ, H.264 on NVENC), written in frame order even when uploads arrive out
+  of order. `serve.mjs` got the same routes, to separate "native host" from "Rust". Also: a UDP camera listener for the
+  engine bridge's `vsb/1` datagrams feeding a Tauri channel (`bridge.rs`), raw-body IPC commands, and the switches
+  `--cdp` (WebView2's DevTools port), `--hidden`, `--data` and `--browser-args`.
+- `desktop/tools/drive.mjs` launches the editor in Tauri (three ways) or Chrome (visible or headless), times startup and
+  runs a script in the page over the DevTools protocol, so every number below comes from the same in-page code
+  (`desktop/bench/bench.js`). `desktop/wgpu-probe/` runs `desktop/bench/probe.wgsl` natively; `wgsl_bench.html` runs it
+  in a browser. How to run: `desktop/README.md`.
+- Results (JSON per run), the ProRes masters, renders and the Blender test: `Virtual Shot spike\rust_tauri\`.
+
+### Measurements
+
+**Rendering and the editor: no difference.** WebView2 155 exposes WebGPU with timestamp queries on the 4090. Frames are
+pixel-identical to Chrome's (engine look, and the editor's final-look Render mode: 0 differing pixels on every compared
+frame).
+
+| | Chrome 155 (visible window) | Tauri / WebView2 155 |
+|---|---|---|
+| Editor ready, warm profile | 1.24–1.33 s | 1.39–1.43 s |
+| Editor ready, fresh profile (shaders compile) | 9.0 s | 10.6 s |
+| Playback, 10 s from f264, final look, Play quality | 583 frames drawn, 0 dropped, GPU 4.84–4.87 ms, CPU p50 1.8–2.0 ms | 583 frames, 0 dropped, GPU 4.87–4.88 ms, CPU p50 1.7–1.8 ms |
+| Render mode, f700–759, final look, Render quality | 9.6 s | 9.5 s (also 9.5 s with the window never shown) |
+| Memory, idle editor | 933 MB private (8 processes), plus the Node server | 845–856 MB (7 processes, shell included) |
+
+One Chrome playback run dropped 165 frames (its window had lost focus or was covered); its two repeats matched Tauri.
+
+**Frame export: the host's language doesn't matter; the transport does.** All 1176 frames, 1920×1080, engine look,
+Render quality. Rendering alone takes 8.3 s and reading the pixels back (`getImageData`) 24.3 s in both hosts, so
+readback is the floor for any raw-pixel path.
+
+| Path | Chrome headless + Node | Tauri, page from the shell's HTTP port | Tauri, page from the `vs://` scheme |
+|---|---|---|---|
+| Current exporter (`toDataURL` PNG, POST) | 38.2 s (visible Chrome: 37.0 s) | 32.4 s (from the Node server: 32.2 s) | 35.5 s |
+| Raw RGBA, the host encodes PNG | 37.0 s (608 MB) | 29.3 s at fast compression (files ~4× larger); 41.1 s at balanced (589 MB) | 100.4 s |
+| Raw RGBA piped into ffmpeg, ProRes 4444 .mov | 30.2 s | 31.0 s | 103.2 s |
+
+- **The ProRes pipe is the real gain, and it is a host feature, not a Rust one.** A finished 1176-frame ProRes 4444
+  master (862 MB, byte-identical from every host) in 30 s, as fast as today's PNG sequence, with no encode step after.
+  Decoded back, every pixel is within 2% of the PNG (f720: 67.9 dB; 4:4:4 BT.709, limited range). The encoder's colour
+  options alone left transfer and primaries untagged; `setparams` in the filter chain tags them (checked with ffprobe on
+  ProRes 4444 and on H.264 from NVENC, which also works).
+- **Rust's PNG encoder is not faster at the same compression** (41.1 s against Node's 37.0 s). Its fast level wins
+  only by writing files about four times larger.
+- **Tauri's custom scheme is slow for big uploads.** An 8 MB POST took 90 ms through `vs://`, against 23–26 ms from
+  Chrome to Node, 36 ms from WebView2 to the shell's HTTP port and 40 ms from WebView2 to Node. Tauri's `invoke` with a
+  raw 8 MB body round-trips in 116 ms. The cause, in wry 0.57's source: custom-scheme request bodies are read through
+  COM `IStream::Read` in 1 KB chunks on the window's UI thread, which also slows the page's readbacks (21 vs 13 ms a
+  frame). Small requests are fine (0.3 MB: 5 ms everywhere). **Rule: in a Tauri shell, serve the page and bulk data from
+  a localhost port inside the shell, not from the custom scheme.**
+- **Chromium keeps typed-array upload bodies.** Raw-pixel exports in WebView2 grew the renderer by about 8 MB a frame
+  until it crashed (at frame 1011 twice; once past 16 GB). A synthetic test kept `Uint8Array` and `ArrayBuffer` POST
+  bodies in Chrome 155 too (+2.4 GB per 1.2 GB posted, not freed by a forced GC), while `Blob` bodies were freed in both:
+  the WebView2 renderer stayed at 126–311 MB through whole exports. **Rule: POST raw pixels as Blobs** (today's exporter
+  already does).
+- **Hidden windows render.** A Tauri window that is never shown still reports `visible`, runs `requestAnimationFrame` at
+  162 Hz and renders bit-identical frames. The hidden-tab stalls of §1.15 don't apply, so a background render window
+  next to the editor is possible; a hidden Chrome tab would be throttled.
+
+**Engine bridge: the same.** The same 60 Hz datagrams reached the page in 1.4–2.6 ms p50 through the Node relay
+(WebSocket) and through the Rust UDP listener and a Tauri channel, p95 within 0.6 ms of each other. With 150 ms stalls
+on the page's main thread, both delivered late alike (p95 127 ms) and both receive stamps stayed accurate (Rust's within
+0.2–0.5 ms of the sender). A real Blender 5.2 (background, `tools/blender_bridge.py` from `spike-engine-bridge`,
+unchanged apart from `--port 8798`) streamed 180 of 180 frames into the shell at about 1 ms p50. The gain is one process
+fewer, not latency.
+
+**Native GPU (wgpu 30) against the browser, same WGSL.** `probe.wgsl` has two synthetic full-screen passes shaped like
+ours: a 256-tap depth-of-field gather (texture-bound) and a 96-step haze-like march with 4-octave noise and a light loop
+(ALU-bound). Median GPU ms over 40 runs at 1920×1080; two native runs agreed within 0.1 ms.
+
+| | Gather | March |
+|---|---|---|
+| Chrome 155 and WebView2 155 (Dawn on D3D12) | 1.75–1.84 | 10.1–10.2 |
+| Same, with `--enable-dawn-features=disable_robustness` | 1.44–1.56 | 9.2–9.3 |
+| wgpu on DX12, bounds checks on / off | 1.62–1.70 / 1.36–1.45 | 9.03–9.06 / 8.58–8.59 |
+| wgpu on Vulkan, bounds checks on / off | 1.71–1.72 / 1.43–1.44 | 7.25 / 6.08–6.10 |
+
+- With robustness off (a switch a desktop shell can set for its own trusted pages; Chrome would need a dedicated
+  profile), the browser comes within 5–8% of native DX12. The rest of the native gain is Vulkan: the driver ran the
+  ALU-heavy march 20–29% faster than DX12. Chrome's switches didn't move Dawn off D3D12.
+- On the real editor the robustness switch changed nothing (haze march 3.42 ms, DOF 1.30 ms either way), so the probe's
+  gain doesn't carry over to today's TSL output.
+- The Vulkan gain needs a renderer outside three.js: our own WGSL or a Rust engine, re-porting the TSL looks, loaders,
+  skinning (characters) and the WebGL2 fallback, and redoing the parity work of §1–6. Not worth it while the look's
+  passes cost single-digit milliseconds at Play quality.
+
+**Cost of the Rust side.** The first release build took 2 min 6 s, dependencies included. After a one-file change a
+release rebuild takes 1 min 6–17 s (thin LTO, one codegen unit) and a debug one 2.9 s (39 s from clean); `target\` is
+3.2 GB. The page itself still reloads instantly, because the shell reads it from the repo. The exe is 10.7 MB and the
+NSIS installer 2.3 MB (without the web files). Tool caches outside the repo: `~\.cargo`, the Tauri CLI's NSIS download
+in `%LOCALAPPDATA%\tauri`, and WebView2 profiles in `%TEMP%\vs-rust-tauri`.
+
+### What fundamentally changes with Tauri
+
+- **One process instead of a browser and a server.** The Rust shell is the server: the same routes, files on E: and G:
+  read and written directly, ffmpeg spawned directly, the bridge's UDP port inside the app. The page doesn't know which
+  host it has, which keeps the browser and artifact paths working. Keep the host API HTTP-shaped for that reason.
+- **The browser engine is no longer chosen or pinned by us.** WebView2 is evergreen and updates with Edge (155 today,
+  the same as Chrome). A Fixed Version runtime pins it, at the cost of shipping the engine with the app. On macOS Tauri
+  uses WKWebView (WebGPU expected from macOS 26) and on Linux WebKitGTK (no WebGPU found), so a Tauri app is
+  Windows-first in practice. Electron would pin one Chromium on every OS, at roughly 100 MB more per install.
+- **Security model.** Native commands are granted per origin. The `vs://` page could call Rust commands at once; pages
+  from localhost ports were refused ("not allowed by ACL") until listed in a capability with an app manifest. Every
+  native power has to be granted explicitly, which suits a client-facing build.
+- **The app owns its browser switches and windows.** The shell sets WebView2's switches (DevTools port, robustness,
+  throttling) and can open hidden render windows or several webviews. A DevTools port is how Claude drove it here, so
+  the "MCP after Electron" idea works on Tauri too: `VS.cmd` over the DevTools protocol, or an MCP server inside the
+  Rust process.
+- **Lifecycle quirk.** Force-killing the shell left its WebView2 processes running (still there 40 s later), holding the
+  DevTools port and the page (one held 12 GB after a leak test), and a new shell with the same profile reused them. A
+  real app needs a clean shutdown and a single-instance guard; the tests clean up with `desktop/tools/cleanup.ps1`.
+- **Two languages and a compile step** for host features. The renderer, editor and looks stay JavaScript.
+
+### Gains, losses and the recommendation
+
+| Option | Gains | Losses |
+|---|---|---|
+| **Stay browser + Node host** (today) | Artifacts for iteration, no build step, Chrome pinned by choice, the ProRes pipe and disk writes already work (`serve.mjs` now has the ffmpeg routes) | Two things to start (Chrome and the server); hidden tabs throttle; no packaged app |
+| **Tauri shell only** | One 2–11 MB app; direct disk and ffmpeg; hidden render windows; app-owned switches; a home for an MCP server, native dialogs and file watching; gamepads through gilrs if the Gamepad API falls short | Rust for host features (1-minute release rebuilds); an unpinned WebView2; Windows-first; transport rules (a localhost port, Blob bodies) |
+| **Deeper Rust (native rendering)** | 4–40% less GPU time on the probe; Vulkan; no browser limits | Rewrite the renderer and every TSL look; lose three.js's loaders and the artifact path; redo parity |
+
+Recommendation: stay browser-first with the Node host while the look and the editor are still changing, and adopt the
+ProRes pipe now (it works in either host). When a packaged desktop app is wanted (a background render queue, MCP
+control, a client build), make it a Tauri shell that serves the page from a localhost port inside the app, and keep the
+page host-agnostic. Revisit native rendering only if Render-quality passes become the bottleneck, and then as a
+separate render worker over the same scene document, not as the editor's renderer.
+
+Not tested: gamepads in WebView2 (no pad connected), native file dialogs and file watching, an MCP server in Rust,
+macOS and Linux, and Electron itself.
+
+**GPU log.** Every GPU step ran under `F:\Repos\Virtual-Shot\.gpu.lock`, taken and released about 15 times, the
+longest about 25 minutes (an export run that hung when WebView2's renderer crashed). No other session held the lock, so there were no waits or overlaps.
+`nvidia-smi` read 11–31% before runs.
+
 ## Running the spike
 
 ```

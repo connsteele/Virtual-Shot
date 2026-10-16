@@ -36,6 +36,7 @@ if (host.startsWith('tauri')) {
   if (host === 'tauri-node') a.push(`--server=${NODE_BASE}`);
   if (host === 'tauri-http') a.push('--http=8792', '--server=http://localhost:8792');
   if (process.env.EXTRA_ARGS) a.push(`--browser-args=${process.env.EXTRA_ARGS}`);   // extra Chromium switches for WebView2
+  if (process.env.HIDDEN) a.push('--hidden');   // the window never shown: does rendering still run?
   proc = spawn(EXE, a, { stdio: 'ignore' });
 } else {
   const a = [`--remote-debugging-port=${PORT}`, `--user-data-dir=${data}`, '--no-first-run', '--no-default-browser-check',
